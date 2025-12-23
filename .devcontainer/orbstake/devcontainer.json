@@ -1,0 +1,14 @@
+{
+  "name": "OrbStake Environment",
+  "image": "python:3.11-slim",
+  "runArgs": ["--platform=linux/arm64"],
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+  "postCreateCommand": "pip install --upgrade pip",
+  "customizations": {
+    "jetbrains": {
+      "backend": "PyCharm"
+    }
+  }
+}

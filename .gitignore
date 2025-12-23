@@ -1,0 +1,23 @@
+# === 核心机密 (绝对不能提交) ===
+token.json
+credentials.json
+.env
+
+# === 运行时数据 (本地记忆，不传云端) ===
+data/
+# 如果你想保留 data 文件夹结构但不要内容，可以在 data 下放个 .gitkeep 然后在这里写 data/* !data/.gitkeep
+
+# === IDE 配置 (个人设置不共享) ===
+.idea/
+.vscode/
+*.swp
+.venv/
+
+# === Python 垃圾文件 ===
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# === Mac 系统垃圾 ===
+.DS_Store
