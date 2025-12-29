@@ -1,211 +1,181 @@
 import json
 import os
+import datetime
+from typing import List, Dict, Optional
 from agentscope.tool import ToolResponse
 from agentscope.message import TextBlock
 
 
 class AgentNotebook:
     def __init__(self, agent_name: str):
-        self.file_path = os.path.join(os.getcwd(), "data", f"notebook_{agent_name}.json")
-        self._ensure_storage()
+        """
+        初始化笔记本。
+        自动检测是否存在历史文件：
+        - 存在: 加载历史数据
+        - 不存在: 初始化新笔记本
+        """
+        self.agent_name = agent_name
 
-    def _ensure_storage(self):
-        os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
-        # 初始化结构，确保所有键都存在
-        if not os.path.exists(self.file_path):
-            self._save({
-                "normal_tasks": [],
-                "supreme_schedules": [],
-                "created_tasks_whitelist": []
-            })
+        # 1. 确定存储路径 (确保在项目根目录的 data 文件夹下)
+        # 获取当前文件 (src/tools/note_tools.py) 的上上上级目录 (项目根目录)
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        self.data_dir = os.path.join(base_dir, "data")
+        self.file_path = os.path.join(self.data_dir, f"notebook_{agent_name}.json")
+
+        # 确保目录存在
+        if not os.path.exists(self.data_dir):
+            os.makedirs(self.data_dir)
+
+        # 2. 核心逻辑：加载或新建
+        if os.path.exists(self.file_path):
+            self._load()
+            print(f"📖 [Notebook] 发现历史存档，已加载: {self.file_path}")
         else:
-            # 如果文件存在但缺少字段（旧版本兼容），补全它
-            data = self._load()
-            changed = False
-            for key in ["normal_tasks", "supreme_schedules", "created_tasks_whitelist"]:
-                if key not in data:
-                    data[key] = []
-                    changed = True
-            if changed:
-                self._save(data)
+            self._init_new()
+            print(f"✨ [Notebook] 未发现存档，已新建: {self.file_path}")
 
-    def _save(self, data):
-        with open(self.file_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+    def _init_new(self):
+        """初始化数据结构"""
+        self.data = {
+            "meta": {
+                "owner": self.agent_name,
+                "created_at": str(datetime.datetime.now())
+            },
+            "tasks": [],  # 待办/已办任务
+            "projects": [],  # 项目进度
+            "patterns": [],  # 总结出的规律
+            "mementos": []  # 每日自我交代
+        }
+        self._save()
 
-    def _load(self) -> dict:
+    def _load(self):
+        """加载 JSON (包含自动修复逻辑)"""
         try:
             with open(self.file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                return data
-        except:
-            return {"normal_tasks": [], "supreme_schedules": [], "created_tasks_whitelist": []}
+                loaded_data = json.load(f)
 
-    def _find_and_remove(self, task_list: list, task_id: str) -> bool:
-        """内部辅助：从列表中查找并移除指定ID的项目（兼容旧的纯字符串ID和新的字典格式）"""
-        for i, item in enumerate(task_list):
-            # 兼容逻辑：如果是字典，检查 id 字段；如果是字符串（旧数据），直接比较
-            current_id = item.get("id") if isinstance(item, dict) else item
-            if current_id == task_id:
-                task_list.pop(i)
-                return True
-        return False
+            # --- 🔥 核心修复开始 ---
+            # 定义标准数据结构
+            default_structure = {
+                "meta": {
+                    "owner": self.agent_name,
+                    "created_at": str(datetime.datetime.now())
+                },
+                "tasks": [],  # 确保这行存在
+                "projects": [],  # 确保这行存在
+                "patterns": [],
+                "mementos": []
+            }
 
-    def _check_exists(self, task_list: list, task_id: str) -> bool:
-        """内部辅助：检查ID是否存在"""
-        for item in task_list:
-            current_id = item.get("id") if isinstance(item, dict) else item
-            if current_id == task_id:
-                return True
-        return False
+            # 检查并补全缺失的 key (数据迁移逻辑)
+            # 如果你的旧文件里没有 'tasks'，这里会自动给它加上一个空列表 []
+            data_changed = False
+            for key, default_val in default_structure.items():
+                if key not in loaded_data:
+                    loaded_data[key] = default_val
+                    data_changed = True
 
-    # === 🤖 暴露给 Agent 的工具 ===
+            self.data = loaded_data
 
-    def read_notes(self) -> ToolResponse:
+            # 如果发生了补全，立即存回文件，防止下次还缺
+            if data_changed:
+                self._save()
+                print(f"🔧 [Notebook] 检测到旧格式数据，已自动修复缺失字段。")
+            # --- 🔥 核心修复结束 ---
+
+        except Exception as e:
+            print(f"⚠️ 笔记本文件损坏，重置为空: {e}")
+            self._init_new()
+
+    def _save(self):
+        """写入 JSON"""
+        with open(self.file_path, 'w', encoding='utf-8') as f:
+            json.dump(self.data, f, ensure_ascii=False, indent=2)
+
+    # =================================================
+    # 📖 工具能力 (Tools)
+    # =================================================
+
+    def read_notebook(self) -> ToolResponse:
         """
-        查阅当前笔记本中存储的所有任务和日程记录。
-
-        当需要确认哪些任务已经被记录、哪些是不可变动的最高日程时使用此工具。
-        它会返回当前的“最高日程”列表和“普通任务”列表，包含 ID 和名称。
-
-        Returns:
-            ToolResponse: 包含当前所有记录状态的工具响应对象。
+        读取笔记本的所有内容。
+        用于：审计当前状态、检查未完成任务、回顾之前的总结。
         """
-        data = self._load()
+        # 转换为易读的文本格式
+        content = json.dumps(self.data, ensure_ascii=False, indent=2)
+        return ToolResponse(content=[TextBlock(type="text", text=content)])
 
-        def format_list(lst):
-            # 格式化输出：将对象列表转为 "ID: 名称" 的易读字符串
-            formatted = []
-            for item in lst:
-                if isinstance(item, dict):
-                    formatted.append(f"{item.get('id')} ({item.get('name', '无标题')})")
-                else:
-                    # 兼容旧数据
-                    formatted.append(f"{item} (旧数据)")
-            return formatted
-
-        supreme = format_list(data.get("supreme_schedules", []))
-        normal = format_list(data.get("normal_tasks", []))
-
-        msg_content = (
-            f"📖 [笔记状态]:\n"
-            f"👑 [最高日程 (不可动/High Priority)]: {supreme}\n"
-            f"✅ [普通任务 (可调整/Normal)]: {normal}"
-        )
-
-        return ToolResponse(
-            content=[TextBlock(type="text", text=msg_content)]
-        )
-
-    def write_note(self, id: str, name: str, is_supreme: bool = False) -> ToolResponse:
+    def record_task(self, content: str, status: str = "todo", due_date: str = "无") -> ToolResponse:
         """
-        将一个任务 ID 和名称记录到笔记本中，或更新其状态。
-
-        用于标记任务已处理，或者记录扫描到的新日程。
-        如果该 ID 已存在于另一个列表中，它会被移动到当前指定的目标列表中。
-
+        记录一条新任务或日程备注。
         Args:
-            id (str): 任务或日程的唯一标识符（ID）。
-            name (str): 任务或日程的标题/名称（Summary）。
-            is_supreme (bool, optional): 是否为“最高日程”（即固定时间、不可变动的日程）。
-                                         默认为 False，表示记录为“普通任务”。
-
-        Returns:
-            ToolResponse: 操作结果的反馈信息。
+            content: 任务内容
+            status: todo/done/pending
+            due_date: 截止时间描述
         """
-        data = self._load()
-        target_key = "supreme_schedules" if is_supreme else "normal_tasks"
-        other_key = "normal_tasks" if is_supreme else "supreme_schedules"
+        task_id = f"T{len(self.data['tasks']) + 1}"
+        new_task = {
+            "id": task_id,
+            "content": content,
+            "status": status,
+            "due": due_date,
+            "created_at": str(datetime.datetime.now())
+        }
+        self.data['tasks'].append(new_task)
+        self._save()
+        return ToolResponse(content=[TextBlock(type="text", text=f"✅ 已记录任务 {task_id}: {content}")])
 
-        target_list = data[target_key]
-        other_list = data[other_key]
+    def update_task_status(self, task_id: str, status: str) -> ToolResponse:
+        """更新任务状态 (如把 todo 改为 done)"""
+        for t in self.data['tasks']:
+            if t['id'] == task_id or task_id in t['content']:  # 模糊匹配 ID 或内容
+                old_status = t['status']
+                t['status'] = status
+                t['updated_at'] = str(datetime.datetime.now())
+                self._save()
+                return ToolResponse(
+                    content=[TextBlock(type="text", text=f"✅ 任务 {t['id']} 状态已更新: {old_status} -> {status}")])
 
-        # 1. 避免跨列表重复：如果在另一个列表里，先删掉
-        self._find_and_remove(other_list, id)
+        return ToolResponse(content=[TextBlock(type="text", text=f"❌ 未找到任务 ID: {task_id}")])
 
-        msg_content = ""
+    def update_project_status(self, project_name: str, progress: str) -> ToolResponse:
+        """更新项目进度"""
+        # 查找现有项目
+        for p in self.data['projects']:
+            if p['name'] == project_name:
+                p['progress'] = progress
+                p['updated_at'] = str(datetime.datetime.now())
+                self._save()
+                return ToolResponse(
+                    content=[TextBlock(type="text", text=f"✅ 项目 '{project_name}' 更新为: {progress}")])
 
-        # 2. 检查当前列表是否已存在
-        # 我们先尝试移除旧的同ID记录（为了更新名称），然后再添加新的
-        removed_in_target = self._find_and_remove(target_list, id)
+        # 新建项目
+        self.data['projects'].append({
+            "name": project_name,
+            "progress": progress,
+            "created_at": str(datetime.datetime.now())
+        })
+        self._save()
+        return ToolResponse(content=[TextBlock(type="text", text=f"✅ 新项目 '{project_name}' 已创建: {progress}")])
 
-        # 3. 添加新记录（包含 ID 和 Name）
-        new_entry = {"id": id, "name": name}
-        target_list.append(new_entry)
-        self._save(data)
-
-        tag = "👑 最高日程" if is_supreme else "✅ 普通任务"
-        action = "更新" if removed_in_target else "标记"
-        msg_content = f"✍️ 已{action}为 {tag}: {name} (ID: {id})"
-
-        return ToolResponse(
-            content=[TextBlock(type="text", text=msg_content)]
-        )
-
-    def record_created_task(self, task_id: str, task_name: str) -> ToolResponse:
+    def add_pattern(self, observation: str) -> ToolResponse:
         """
-        将由 Agent 新创建的任务 ID 和名称记录到白名单中，防止在后续扫描中被误删。
-
-        **使用场景**：
-        每当调用 `add_google_task` 或 `add_calendar_event` 创建新项目后，必须立即调用此工具。
-        这能起到“保护盾”的作用，防止该任务在随后的“清理旧项”逻辑中被错误地识别为需要删除的对象。
-
-        Args:
-            task_id (str): 刚刚创建的任务或日程的唯一标识符（ID）。
-            task_name (str): 刚刚创建的任务名称。
-
-        Returns:
-            ToolResponse: 包含操作结果反馈的工具响应对象。
+        [晚报专用] 记录一条用户行为规律或反思。
         """
-        data = self._load()
-        if "created_tasks_whitelist" not in data:
-            data["created_tasks_whitelist"] = []
+        pattern_id = f"P{len(self.data['patterns']) + 1}"
+        self.data['patterns'].append({
+            "id": pattern_id,
+            "content": observation,
+            "date": str(datetime.datetime.now())
+        })
+        self._save()
+        return ToolResponse(content=[TextBlock(type="text", text=f"✅ 规律已归档 {pattern_id}: {observation}")])
 
-        msg_content = ""
-        # 检查是否存在，如果存在则不重复添加 (或者可以选择更新名称)
-        if not self._check_exists(data["created_tasks_whitelist"], task_id):
-            data["created_tasks_whitelist"].append({"id": task_id, "name": task_name})
-            self._save(data)
-            msg_content = f"🛡️ Task '{task_name}' ({task_id}) 已加入白名单，后续扫描将忽略它。"
-        else:
-            msg_content = f"⚠️ Task {task_id} 已在白名单中。"
-
-        return ToolResponse(
-            content=[TextBlock(type="text", text=msg_content)]
-        )
-
-    def delete_note(self, id: str) -> ToolResponse:
+    def promote_pattern_to_memory(self, pattern_text: str) -> ToolResponse:
         """
-        从笔记本中彻底删除指定的 ID。
-
-        当一个任务已经彻底完成、取消，或者发现该 ID 无效时使用此工具。
-        这会从“最高日程”和“普通任务”中同时查找并移除该 ID。
-
-        Args:
-            id (str): 需要移除的任务或日程的唯一标识符（ID）。
-
-        Returns:
-            ToolResponse: 删除操作的结果反馈。
+        将一条重要规律标记为'需写入长期记忆'。
+        注意：Agent 收到此返回后，应主动调用 `record_to_memory` 工具。
         """
-        data = self._load()
-        deleted = False
-
-        # 尝试从两个列表中删除
-        if self._find_and_remove(data["normal_tasks"], id):
-            deleted = True
-        if self._find_and_remove(data["supreme_schedules"], id):
-            deleted = True
-        # 也可以选择性地从白名单中删除，视逻辑而定，这里暂且保留或也删除
-        if self._find_and_remove(data.get("created_tasks_whitelist", []), id):
-            deleted = True
-
-        msg_content = ""
-        if deleted:
-            self._save(data)
-            msg_content = f"🗑️ 已从笔记中彻底移除: {id}"
-        else:
-            msg_content = f"⚠️ 笔记中找不到 ID: {id}"
-
-        return ToolResponse(
-            content=[TextBlock(type="text", text=msg_content)]
-        )
+        # 这里我们只做一个回显，提示 Agent 去调用 Mem0 的工具
+        return ToolResponse(content=[TextBlock(type="text",
+                                               text=f"🚀 建议操作：请立即调用 `record_to_memory` 工具，将以下内容存入向量数据库：\n{pattern_text}")])

@@ -1,6 +1,4 @@
 # === 核心机密 (绝对不能提交) ===
-token.json
-credentials.json
 .env
 
 # === 运行时数据 (本地记忆，不传云端) ===
