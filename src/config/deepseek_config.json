@@ -10,8 +10,8 @@
       "base_url": "https://api.deepseek.com"
     },
     "generate_args": {
-      "temperature": 10.0
+      "temperature": 0.7
     },
-    "stream": true
+    "stream": false
   }
 ]

@@ -51,7 +51,7 @@ LARK_USER_OPEN_ID=你的OpenID
 ### 启动程序
 
 ```bash
-python src/main.py
+python src/launch.py
 
 ```
 

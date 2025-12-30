@@ -7,6 +7,7 @@ import lark_oapi as lark
 from typing import Optional, List, Dict, Any
 from agentscope.tool import ToolResponse
 from agentscope.message import TextBlock
+from src.utils.time_utils import TimeUtils
 
 # 配置日志
 logger = logging.getLogger("LarkTool")
@@ -23,32 +24,20 @@ class LarkTool:
     """
 
     def __init__(self, app_id: str, app_secret: str, user_open_id: str = None):
-        """
-        初始化 LarkTool 实例。
-
-        Args:
-            app_id (str): 飞书应用的 App ID。
-            app_secret (str): 飞书应用的 App Secret。
-            user_open_id (str, optional): 默认协作用户的 Open ID。
-                                          用于在创建清单时自动拉人，或创建任务时自动指派。
-                                          如果未提供，部分协作功能可能受限。
-        """
         self.app_id = app_id
         self.app_secret = app_secret
         self.user_open_id = user_open_id
 
-        # 初始化飞书客户端
-        # log_level 设置为 INFO 以减少控制台噪音，调试时可改为 DEBUG
+        # 初始化客户端
         self.client = lark.Client.builder() \
             .app_id(self.app_id) \
             .app_secret(self.app_secret) \
             .log_level(lark.LogLevel.INFO) \
             .build()
 
-        # 初始化资源 ID
-        # 这些 ID 会在第一次调用相关功能时自动获取或创建
-        self.calendar_id = self._init_calendar()
-        self.tasklist_guid = self._init_tasklist()
+        # 懒加载资源 ID
+        self.calendar_id = None
+        self.tasklist_guid = None
 
     def _init_calendar(self) -> str:
         """
@@ -159,34 +148,6 @@ class LarkTool:
             # 用户可能已经在清单里了，忽略报错
             logger.debug(f"Add member warning (safe to ignore): {e}")
 
-    def _parse_time_str(self, time_str: str) -> Optional[str]:
-        """
-        将自然语言时间或 ISO 时间字符串转换为【毫秒级】时间戳字符串。
-
-        飞书 Task V2 API 要求时间戳为毫秒 (ms)，而 Python 默认是秒。
-        """
-        if not time_str: return None
-        try:
-            dt = None
-            # 1. 尝试 ISO 格式解析 (例如: '2025-12-30T12:00:00')
-            if "T" in time_str:
-                dt = datetime.datetime.fromisoformat(time_str)
-            # 2. 尝试常规日期格式解析 (例如: '2025-12-30 12:00:00')
-            else:
-                dt = datetime.datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
-
-            # 3. 强制转换为北京时间 (UTC+8)
-            tz_cn = datetime.timezone(datetime.timedelta(hours=8))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=tz_cn)
-
-            # 4. 关键修正：转换为毫秒级时间戳 (乘以1000)
-            timestamp_ms = int(dt.timestamp() * 1000)
-            return str(timestamp_ms)
-
-        except ValueError:
-            logger.warning(f"Time parse failed for: {time_str}")
-            return None
 
     # =================================================
     # ✅ 任务操作 (核心功能)
@@ -217,17 +178,15 @@ class LarkTool:
                 return ToolResponse(content=[TextBlock(type="text", text="❌ 错误: 无法初始化协作清单，无法创建任务。")])
 
         try:
-            # 1. 构造任务基本信息
             body_builder = lark.api.task.v2.InputTask.builder().summary(summary)
 
-            # 2. ✅ 修复截止时间 (使用毫秒级时间戳)
+            # ✅ 变更点：使用 TimeUtils.to_ms_timestamp
             if due_time:
-                ts_ms = self._parse_time_str(due_time)
+                ts_ms = TimeUtils.to_ms_timestamp(due_time)
                 if ts_ms:
-                    # 飞书 API 要求：传入 timestamp 字符串，且必须是毫秒
                     body_builder.due(lark.api.task.v2.Due.builder()
-                                     .timestamp(ts_ms)
-                                     .is_all_day(False)  # 默认为具体时间点，非全天
+                                     .timestamp(ts_ms)  # 任务用 ms
+                                     .is_all_day(False)
                                      .build())
 
             # 3. ✅ 修复成员逻辑 (负责人 + 关注人)
@@ -425,31 +384,21 @@ class LarkTool:
                 return ToolResponse(content=[TextBlock(type="text", text="❌ 错误: 未找到日历 ID，无法创建日程。")])
 
         # 1. 获取毫秒级时间戳 (由 _parse_time_str 返回)
-        ts_start_ms = self._parse_time_str(start_time)
-        ts_end_ms = self._parse_time_str(end_time)
+        ts_start_sec = TimeUtils.to_sec_timestamp(start_time)
+        ts_end_sec = TimeUtils.to_sec_timestamp(end_time)
 
-        if not ts_start_ms or not ts_end_ms:
+        if not ts_start_sec or not ts_end_sec:
             return ToolResponse(content=[TextBlock(type="text", text="❌ 时间格式错误")])
 
-        # 2. 关键修正：转换为【秒级】时间戳 (Calendar API 要求)
-        # 如果长度大于 10 位，说明是毫秒，需要 / 1000
-        ts_start_sec = str(int(ts_start_ms) // 1000)
-        ts_end_sec = str(int(ts_end_ms) // 1000)
-
         try:
-            # ==========================================
-            # 第一步：创建基础日程
-            # ==========================================
             event_body = lark.api.calendar.v4.CalendarEvent.builder() \
                 .summary(summary) \
                 .description(description) \
                 .start_time(lark.api.calendar.v4.TimeInfo.builder()
-                            .timestamp(ts_start_sec)  # 使用秒级
-                            .timezone("Asia/Shanghai")  # 显式指定时区
+                            .timestamp(ts_start_sec)  # ✅ 日程用 sec
                             .build()) \
                 .end_time(lark.api.calendar.v4.TimeInfo.builder()
-                          .timestamp(ts_end_sec)  # 使用秒级
-                          .timezone("Asia/Shanghai")
+                          .timestamp(ts_end_sec)  # ✅ 日程用 sec
                           .build()) \
                 .need_notification(True) \
                 .color(1) \
@@ -525,23 +474,67 @@ class LarkTool:
     def get_calendar_events(self, time_min: str = None, time_max: str = None) -> ToolResponse:
         """
         查询未来一周或指定时间段的日程。
+        Args:
+            time_min: 开始时间 (如 "2025-01-01 08:00:00")
+            time_max: 结束时间
         """
-        if not self.calendar_id:
-            return ToolResponse(content=[TextBlock(type="text", text="Error: No Calendar")])
+        # 确保日历已初始化
+        cid = self._init_calendar()
+        if not cid:
+            return ToolResponse(content=[TextBlock(type="text", text="❌ 错误: 无法获取日历 ID")])
 
-        ts_min = self._parse_time_str(time_min) or self._parse_time_str(
-            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        ts_max = self._parse_time_str(time_max) or str(int(time.time()) + 7 * 86400)
+        # 1. 处理时间：使用 TimeUtils 转换为【秒级】时间戳
+        # 如果用户没填，默认查当前时间
+        if time_min:
+            ts_min = TimeUtils.to_sec_timestamp(time_min)
+        else:
+            ts_min = str(int(time.time()))  # 当前时间秒数
 
-        req = lark.api.calendar.v4.ListCalendarEventRequest.builder() \
-            .calendar_id(self.calendar_id) \
-            .start_time(ts_min) \
-            .end_time(ts_max) \
-            .build()
+        # 如果用户没填结束时间，默认查 7 天后
+        if time_max:
+            ts_max = TimeUtils.to_sec_timestamp(time_max)
+        else:
+            ts_max = str(int(time.time()) + 7 * 86400)
 
-        resp = self.client.calendar.v4.calendar_event.list(req)
-        res = [f"🆔 {e.event_id} | 📝 {e.summary}" for e in resp.data.items or []]
-        return ToolResponse(content=[TextBlock(type="text", text="\n".join(res) if res else "无日程")])
+        if not ts_min or not ts_max:
+            return ToolResponse(content=[TextBlock(type="text", text="❌ 时间格式无法解析")])
+
+        try:
+            # 2. 构造请求
+            req = lark.api.calendar.v4.ListCalendarEventRequest.builder() \
+                .calendar_id(cid) \
+                .start_time(ts_min) \
+                .end_time(ts_max) \
+                .build()
+
+            # 3. 发起调用
+            resp = self.client.calendar.v4.calendar_event.list(req)
+
+            if not resp.success():
+                return ToolResponse(content=[TextBlock(type="text", text=f"❌ 查询失败: {resp.msg}")])
+
+            # 4. 格式化输出
+            items = resp.data.items or []
+            if not items:
+                return ToolResponse(content=[TextBlock(type="text", text="📅 该时间段内无日程。")])
+
+            res_lines = []
+            for e in items:
+                # 尝试解析时间显示
+                start_str = "未知"
+                try:
+                    # 飞书返回的 start_time 也是秒级时间戳
+                    s_ts = int(e.start_time.timestamp)
+                    start_str = datetime.datetime.fromtimestamp(s_ts, TimeUtils.TZ_CN).strftime("%m-%d %H:%M")
+                except:
+                    pass
+
+                res_lines.append(f"- 🕒 {start_str} | **{e.summary}** (ID: {e.event_id})")
+
+            return ToolResponse(content=[TextBlock(type="text", text="\n".join(res_lines))])
+
+        except Exception as e:
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 系统异常: {e}")])
 
     def delete_calendar_event(self, event_id: str) -> ToolResponse:
         """删除指定日程。"""
