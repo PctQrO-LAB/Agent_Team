@@ -1,69 +1,112 @@
 
 ---
 
-# ScheduleAgent 使用说明
+# 📝 Agent Team 项目使用说明
 
-本项目是一个基于 AgentScope 的飞书自动化办公智能体，支持自动管理飞书任务清单、创建日历日程以及记录本地运行笔记。
+本项目是一个基于 **AgentScope** 与 **飞书 (Lark)** 构建的自律任务管理智能体集群。通过飞书机器人，智能体能够自动管理你的日程、任务清单，并以“管理合伙人”的身份为你提供晨报、午报及晚报服务。
 
-## 1. 环境准备
+## 1. 🚀 飞书开放平台设置指南
+
+要运行此 Agent，你需要在飞书开放平台创建一个自建应用。
+
+### 第一步：创建应用
+
+1. 登录 [飞书开放平台](https://open.feishu.cn/app?lang=zh-CN)。
+2. 点击 **“创建自建应用”**，填写名称（如：调度官）并上传图标。
+
+### 第二步：获取凭证 (App ID & App Secret)
+
+1. 在左侧菜单栏选择 **“凭证与基础信息”**。
+2. 你可以在此处找到 **App ID** 和 **App Secret**。请将其妥善保管，后续需填入 `.env` 文件。
+
+### 第三步：开启机器人能力
+
+1. 在左侧菜单中找到 **“应用功能” -> “机器人”**。
+2. 点击 **“启用机器人”**。这是 Agent 与你聊天的前提。
+
+### 第四步：配置事件订阅 (长连接模式)
+
+1. 进入 **“事件订阅”**。
+2. 推荐选择 **“使用长连接”**。这种模式下，Agent 可以在本地或 NAS 运行，无需公网 IP 即可接收消息。
+
+### 第五步：开通权限 (重要)
+
+在 **“权限管理”** 中，搜索并开通以下权限：
+
+* **消息内容读取权限**：`im:message:p2p_msg:readonly` (读取私聊消息) 和 `im:message.group_msg:readonly` (读取群聊消息)。
+* **发送消息**：`im:message:send_as_bot`。
+* **日历**：`calendar:calendar:readonly` 和 `calendar:calendar` (管理日程)。
+* **任务**：`task:task` (管理清单与任务)。
+* **通讯录**：`contact:user.employee_id:readonly` (获取你的 Open ID，以便 Agent 主动找你)。
+
+### 第六步：发布应用
+
+1. 点击 **“版本管理与发布”**。
+2. 创建版本并申请上线。如果是个人使用，管理员审核通过后即可生效。
+
+---
+
+## 2. 🛠️ 快速开始
 
 ### 依赖安装
 
-推荐使用 Python 3.10+ 环境。在项目根目录下执行：
+推荐使用 Python 3.10+ 环境。
 
 ```bash
 pip install -r requirements.txt
 
 ```
 
-### 飞书应用权限
+### 环境变量配置
 
-请确保你的飞书自建应用已开通以下权限：
-
-* **任务**：查看、创建、更新、删除任务，查看及创建清单。
-* **日历**：更新日历及日程信息。
-* **通讯录**：获取用户 user ID（用于识别 `USER_OPEN_ID`）。
-
-## 2. 配置文件 (.env)
-
-由于安全原因，`.env` 文件已被 `.gitignore` 忽略。**你需要在项目根目录下手动创建一个名为 `.env` 的文件**，并填入以下内容：
+在项目根目录创建 `.env` 文件，格式如下：
 
 ```env
-# --- 大模型 API 配置 ---
-# DeepSeek API Key
-DEEPSEEK_API_KEY=你的Key内容
+# --- 大模型配置 ---
+DEEPSEEK_API_KEY=你的Key
+DASHSCOPE_API_KEY=你的Key (用于Embedding)
 
-# DashScope (通义千问) API Key
-DASHSCOPE_API_KEY=你的Key内容
+# --- 调度官 (Scheduler) 配置 ---
+# 此处的前缀与 launch.py 中的工厂方法对应
+SCHEDULER_APP_ID=从飞书获取的AppID
+SCHEDULER_APP_SECRET=从飞书获取的AppSecret
 
-# --- 飞书机器人配置 ---
-# 飞书应用的 App ID 和 App Secret
-LARK_APP_ID=你的AppID
-LARK_APP_SECRET=你的AppSecret
-
-# 你的个人飞书 Open ID (Agent 将任务指派给你)
-LARK_USER_OPEN_ID=你的OpenID
+# 你的个人飞书 Open ID (用于接收定时报告)
+USER_OPEN_ID=你的OpenID
 
 ```
 
-## 3. 运行指南
+### 启动服务
 
-### 启动程序
+现在的系统采用工厂模式，一键启动所有就绪的 Agent：
 
 ```bash
 python src/launch.py
 
 ```
 
-### 功能说明
+---
 
-* **任务管理**：Agent 启动后会检查是否存在名为 `🤖 Agent 协作清单` 的清单。如果没有，它会自动创建并把你拉入协作。所有的任务都会创建在此清单内。
-* **日历同步**：Agent 创建日程后，会自动将你添加为参与人。你需要去飞书日历查看邀请并确认。
-* **本地笔记**：Agent 的运行状态、待办历史和规律总结会自动保存在 `data/notebook_Scheduler.json` 中。
+## 3. 🧠 核心功能架构
 
-## 4. 注意事项
+* **多 Agent 工厂**：支持在 `launch.py` 中通过配置快速扩展 Coder、Searcher 等新 Agent。
+* **飞书收发器**：内置 `LarkManager` 处理消息清洗与 Markdown 卡片回复。
+* **生命周期自治**：Agent 自主管理“开启、响应、定时、退出”逻辑。
+* **三层存储笔记本**：
+* `Memento`：跨会话的自我交代，确保 Agent 醒来后能接上进度。
+* `Tasks`：待办任务管理。
+* `Calendars`：日程记录，自动与飞书日历同步。
 
-* **时间戳说明**：本项目已处理飞书任务（毫秒）与日历（秒）之间的时间戳差异，调用工具时直接传入标准时间格式（如 `2025-12-30 10:00:00`）即可。
-* **环境变量名**：请确保 `.env` 中的变量名与 `LarkTool` 初始化时的读取逻辑保持一致。
+
+
+---
+
+## 4. 📂 项目结构
+
+* `src/launch.py`: 系统总入口。
+* `src/agents/`: 存放各 Agent 的思考逻辑与生命周期定义。
+* `src/core/`: 核心连接器，包含飞书通讯与模型加载逻辑。
+* `src/tools/`: Agent 可调用的工具集（飞书工具、笔记本、时钟）。
+* `src/utils/`: 时间戳转换等通用工具。
 
 ---
