@@ -513,23 +513,33 @@ class LarkTool:
             if not resp.success():
                 return ToolResponse(content=[TextBlock(type="text", text=f"❌ 查询失败: {resp.msg}")])
 
-            # 4. 格式化输出
             items = resp.data.items or []
             if not items:
                 return ToolResponse(content=[TextBlock(type="text", text="📅 该时间段内无日程。")])
 
             res_lines = []
             for e in items:
+                # ==========================================
+                # ✅ 关键修复：过滤已删除的日程
+                # ==========================================
+                if e.status == "cancelled":
+                    continue
+
                 # 尝试解析时间显示
                 start_str = "未知"
                 try:
-                    # 飞书返回的 start_time 也是秒级时间戳
                     s_ts = int(e.start_time.timestamp)
                     start_str = datetime.datetime.fromtimestamp(s_ts, TimeUtils.TZ_CN).strftime("%m-%d %H:%M")
                 except:
                     pass
 
-                res_lines.append(f"- 🕒 {start_str} | **{e.summary}** (ID: {e.event_id})")
+                # 兜底处理 summary 为 None 的情况
+                summary = e.summary if e.summary else "(无题)"
+                res_lines.append(f"- 🕒 {start_str} | **{summary}** (ID: {e.event_id})")
+
+            # 如果过滤后列表空了
+            if not res_lines:
+                return ToolResponse(content=[TextBlock(type="text", text="📅 该时间段内无有效日程。")])
 
             return ToolResponse(content=[TextBlock(type="text", text="\n".join(res_lines))])
 
