@@ -104,12 +104,15 @@ class LarkManager:
 
     async def _send_lark_card(self, receive_id: str, text: str):
         """底层发送实现"""
+        # 自动判断 ID 类型：如果是 ou_ 开头则是 open_id，如果是 oc_ 开头则是 chat_id
+        id_type = "open_id" if receive_id.startswith("ou_") else "chat_id"
+
         card_content = {
             "config": {"wide_screen_mode": True},
             "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": text}}]
         }
         req = CreateMessageRequest.builder() \
-            .receive_id_type("chat_id") \
+            .receive_id_type(id_type) \
             .request_body(CreateMessageRequestBody.builder()
                           .receive_id(receive_id).msg_type("interactive")
                           .content(json.dumps(card_content)).build()) \

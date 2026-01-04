@@ -5,3 +5,4 @@ lark-oapi
 python-dotenv
 apscheduler
 mem0ai
+dotenv

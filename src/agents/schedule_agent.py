@@ -14,7 +14,7 @@ from agentscope.formatter import DeepSeekChatFormatter
 # --- 项目模块 ---
 from src.core.load_model import load_model_config
 from src.config.prompts import SCHEDULE_SYSTEM_PROMPT
-from src.tools.lark_tools import LarkTool
+from src.tools.lark_schedule_tools import LarkScheduleTool
 from src.tools.note_tools import AgentNotebook
 from src.tools.clock_tool import ClockTool
 from src.core.lark_manager import LarkManager
@@ -65,7 +65,9 @@ class ScheduleAgent(ReActAgent):
             async def trigger_report(report_type: str, prompt: str):
                 print(f"⏰ [{self.name}] 生物钟触发: {report_type}")
                 # 1. 构造系统指令
-                msg = Msg(name="system_clock", content=prompt, role="user")
+                current_time_str = ClockTool().get_current_datetime().content[0].text
+                full_prompt = f"【系统时间: {current_time_str}】\n{prompt}"
+                msg = Msg(name="system_clock", content=full_prompt, role="user")
 
                 try:
                     # 2. 思考
@@ -145,7 +147,7 @@ class ScheduleAgent(ReActAgent):
         print(f"🛠️ [ScheduleAgent] 正在自我组装 (Target: {user_id})...")
 
         # A. 准备工具
-        lark_tool = LarkTool(app_id, app_secret, user_id)
+        lark_tool = LarkScheduleTool(app_id, app_secret, user_id)
         notebook = AgentNotebook(agent_name="Scheduler")
         clock_tool = ClockTool()
 

@@ -12,7 +12,7 @@ project_root = os.path.dirname(os.path.dirname(current_dir))
 sys.path.append(project_root)
 
 from dotenv import load_dotenv
-from src.tools.lark_tools import LarkTool
+from src.tools.lark_schedule_tools import LarkTool
 
 load_dotenv()
 

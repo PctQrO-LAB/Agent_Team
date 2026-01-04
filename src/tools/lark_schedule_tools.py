@@ -13,7 +13,7 @@ from src.utils.time_utils import TimeUtils
 logger = logging.getLogger("LarkTool")
 
 
-class LarkTool:
+class LarkScheduleTool:
     """
     飞书 (Lark/Feishu) 工具类，用于 Agent 与飞书日历和任务进行交互。
 
@@ -323,7 +323,7 @@ class LarkTool:
 
                 # 5. 组装输出
                 # 格式: 🔲 任务标题 (截止 12-30 18:00) [ID: xxx]
-                res.append(f"{status_icon} **{item.summary}** ({time_info}) `ID:{item.guid}`")
+                res.append(f"🆔 `{item.guid}` | {status_icon} **{item.summary}** ({time_info})")
 
             title = "📋 **协作清单全览**" if show_completed else "📋 **待办事项**"
             return ToolResponse(content=[TextBlock(type="text", text=f"{title}:\n" + "\n".join(res))])
@@ -535,7 +535,7 @@ class LarkTool:
 
                 # 兜底处理 summary 为 None 的情况
                 summary = e.summary if e.summary else "(无题)"
-                res_lines.append(f"- 🕒 {start_str} | **{summary}** (ID: {e.event_id})")
+                res_lines.append(f"- 🆔 `{e.event_id}` | 🕒 {start_str} | **{summary}**")
 
             # 如果过滤后列表空了
             if not res_lines:
