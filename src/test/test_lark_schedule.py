@@ -1,8 +1,12 @@
 import sys
 import os
 import time
-SCHEDULER_APP_ID = "cli_a9c4a9ed8fb9dcd6"
-SCHEDULER_APP_SECRET = "2p0HZVZiJHWhaR8qIGnjFf7ZkAlFrMsx"
+SCHEDULER_APP_ID = os.environ.get("SCHEDULER_APP_ID") # 安全，从环境变量读
+SCHEDULER_APP_SECRET = os.environ.get("SCHEDULER_APP_SECRET")
+
+if not SCHEDULER_APP_ID:
+    print("❌ 错误：未配置环境变量，无法运行测试。")
+    exit(1)
 
 # --------------------------------------------------------
 # 路径修复 (确保能找到 src)

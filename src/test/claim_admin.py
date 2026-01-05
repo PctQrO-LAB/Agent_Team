@@ -5,12 +5,12 @@ from lark_oapi.api.calendar.v4 import *
 from dotenv import load_dotenv
 
 # 加载环境变量
-SCHEDULER_APP_ID="cli_a9c4a9ed8fb9dcd6"
-SCHEDULER_APP_SECRET="2p0HZVZiJHWhaR8qIGnjFf7ZkAlFrMsx"
+SCHEDULER_APP_ID = os.environ.get("SCHEDULER_APP_ID") # 安全，从环境变量读
+SCHEDULER_APP_SECRET = os.environ.get("SCHEDULER_APP_SECRET")
 
-USER_OPEN_ID="ou_28d9e5ce34a5d520e676f045614ca38c"
-
-
+if not SCHEDULER_APP_ID:
+    print("❌ 错误：未配置环境变量，无法运行测试。")
+    exit(1)
 def claim_calendar_ownership():
     # 1. 从 .env 获取配置
     app_id = SCHEDULER_APP_ID

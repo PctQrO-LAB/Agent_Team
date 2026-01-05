@@ -13,8 +13,17 @@ from agents.schedule_agent import ScheduleAgent
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger("Launcher")
 
+# 1. 先尝试找本地的 .env (适合你在 MacBook 上开发)
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-load_dotenv(os.path.join(ROOT_DIR, '.env'))
+local_env_path = os.path.join(ROOT_DIR, '.env')
+
+if os.path.exists(local_env_path):
+    load_dotenv(local_env_path)
+    logger.info(f"📂 已加载本地配置文件: {local_env_path}")
+else:
+    # 2. 如果找不到文件，就默认我们是在 Docker 里
+    # 这时候变量已经由 Portainer 注入进来了，直接用就行
+    logger.info("🚀 未找到本地 .env 文件，将使用系统/Docker环境变量启动。")
 
 
 async def main():
