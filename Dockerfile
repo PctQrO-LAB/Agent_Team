@@ -34,4 +34,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # 6. 启动命令
-CMD ["python", "src/main.py"]
+CMD ["python", "src/launch.py"]
