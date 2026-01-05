@@ -27,15 +27,16 @@ class ScheduleAgent(ReActAgent):
     ScheduleAgent: 负责日程管理的智能体
     """
 
-    def __init__(self, name: str, toolkit: Toolkit, memory: Mem0LongTermMemory):
+    def __init__(self, name: str, toolkit: Toolkit, memory: Mem0LongTermMemory, sys_prompt: str = None):
         # 加载模型配置 (DeepSeek)
         config_args = load_model_config("deepseek_config")
         config_args.pop("config_name", None)
         model_instance = OpenAIChatModel(**config_args)
+        use_prompt = sys_prompt if sys_prompt else SCHEDULE_SYSTEM_PROMPT
 
         super().__init__(
             name=name,
-            sys_prompt=SCHEDULE_SYSTEM_PROMPT,
+            sys_prompt=use_prompt,
             model=model_instance,
             formatter=DeepSeekChatFormatter(),
             toolkit=toolkit,
@@ -168,9 +169,9 @@ class ScheduleAgent(ReActAgent):
                     # [新增] 清理上下文
                     self.current_chat_id = None
 
-            self.scheduler.add_job(trigger_report, 'cron', hour=8, minute=0, args=["晨报", "[系统指令]..."])
-            self.scheduler.add_job(trigger_report, 'cron', hour=12, minute=0, args=["午报", "[系统指令]..."])
-            self.scheduler.add_job(trigger_report, 'cron', hour=20, minute=0, args=["晚报", "[系统指令]..."])
+            self.scheduler.add_job(trigger_report, 'cron', hour=8, minute=0, args=["晨报", "[系统指令] 晨报时间。请读取笔记本，审计今日日程，并给出排程建议。"])
+            self.scheduler.add_job(trigger_report, 'cron', hour=12, minute=0, args=["午报", "[系统指令] 午报时间。请检查上午完成情况，确认下午安排。"])
+            self.scheduler.add_job(trigger_report, 'cron', hour=20, minute=0, args=["晚报", "[系统指令] 晚报时间。请总结全天工作，提取行为规律(add_pattern)，并清理已完成事项。"])
 
             self.scheduler.start()
             print(f"⏰ [{self.name}] 生物钟已启动")
@@ -222,6 +223,12 @@ class ScheduleAgent(ReActAgent):
         notebook = AgentNotebook(agent_name="Scheduler")
         clock_tool = ClockTool()
 
+        # ----------------------------------------------------
+        # 1. 动态生成 Prompt (注入数据库地图)
+        # ----------------------------------------------------
+        db_schema = notebook.get_schema_prompt()
+        full_sys_prompt = SCHEDULE_SYSTEM_PROMPT + "\n" + db_schema
+
         toolkit = Toolkit()
         tools_list = [
             lark_tool.get_calendar_events, lark_tool.create_calendar_event, lark_tool.delete_calendar_event,
@@ -230,6 +237,7 @@ class ScheduleAgent(ReActAgent):
             notebook.read_notebook, notebook.record_task, notebook.update_task_status,
             notebook.save_memento, notebook.record_calendar_event, notebook.add_pattern,
             notebook.promote_pattern_to_memory, notebook.update_project_status,
+            notebook.query_note, notebook.delete_from_database,
             clock_tool.get_current_datetime,
         ]
         for t in tools_list:
@@ -249,7 +257,7 @@ class ScheduleAgent(ReActAgent):
             on_disk=True,
         )
 
-        agent_instance = cls(name="Scheduler", toolkit=toolkit, memory=memory)
+        agent_instance = cls(name="Scheduler", sys_prompt=full_sys_prompt, toolkit=toolkit, memory=memory)
         manager_instance = LarkManager(app_id, app_secret)
 
         return {"name": "Scheduler", "agent": agent_instance, "manager": manager_instance}

@@ -3,6 +3,8 @@ import os
 import time
 import datetime
 from typing import List, Dict, Optional
+
+import json
 from agentscope.tool import ToolResponse
 from agentscope.message import TextBlock
 
@@ -36,10 +38,10 @@ class AgentNotebook:
         self._init_tables()
 
     def _init_tables(self):
-        """初始化数据库表结构"""
+        """初始化数据库表结构 (V2 白板模式)"""
         cursor = self.conn.cursor()
 
-        # --- 1. Mementos ---
+        # --- 1. Mementos (保持不变) ---
         cursor.execute('''
                        CREATE TABLE IF NOT EXISTS mementos
                        (
@@ -50,13 +52,16 @@ class AgentNotebook:
                        )
                        ''')
 
-        # --- 2. Tasks (修改：lark_task_id -> lark_id) ---
+        # --- 2. Tasks (大改：以 lark_id 为核心) ---
+        # 我们把 lark_id 设为 UNIQUE，这样数据库会自动帮我们防重
         cursor.execute('''
                        CREATE TABLE IF NOT EXISTS tasks
                        (
+                           -- 虽然我们不查 id，但保留它作为主键通常是 SQLite 的最佳实践
                            id         INTEGER PRIMARY KEY AUTOINCREMENT,
                            agent_name TEXT NOT NULL,
-                           lark_id    TEXT, -- 👈 已修改为 lark_id
+                           -- 关键修改：添加 UNIQUE 约束，防止重复
+                           lark_id    TEXT UNIQUE, 
                            content    TEXT NOT NULL,
                            status     TEXT      DEFAULT 'todo',
                            due_date   TEXT,
@@ -66,13 +71,14 @@ class AgentNotebook:
                        )
                        ''')
 
-        # --- 3. Calendars ---
+        # --- 3. Calendars (大改：以 lark_event_id 为核心) ---
         cursor.execute('''
                        CREATE TABLE IF NOT EXISTS calendars
                        (
                            id            INTEGER PRIMARY KEY AUTOINCREMENT,
                            agent_name    TEXT NOT NULL,
-                           lark_event_id TEXT,
+                           -- 关键修改：添加 UNIQUE 约束
+                           lark_event_id TEXT UNIQUE,
                            content       TEXT NOT NULL,
                            start_time    TEXT NOT NULL,
                            end_time      TEXT NOT NULL,
@@ -142,42 +148,145 @@ class AgentNotebook:
                 print(f"❌ [DB Error] SQL: {sql} | Error: {e}")
                 raise e
 
+    def get_schema_prompt(self) -> str:
+        """
+        自动生成数据库结构描述，用于注入到 Agent 的 System Prompt 中。
+        """
+        cursor = self.conn.cursor()
+
+        # 获取所有表名
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence';")
+        tables = cursor.fetchall()
+
+        prompt_lines = ["\n## 📂 数据库结构 (用于 query_database 工具)"]
+        prompt_lines.append("你可以使用 query_database(table_name, filter_conditions) 查询以下表格：")
+
+        for table in tables:
+            t_name = table[0]
+            # 获取字段信息
+            cursor.execute(f"PRAGMA table_info({t_name})")
+            columns = [col[1] for col in cursor.fetchall()]  # col[1] 是字段名
+
+            prompt_lines.append(f"- **{t_name}**: 包含字段 {columns}")
+
+        return "\n".join(prompt_lines)
+
     # =================================================
     # 📝 写入工具 (Write Tools)
     # =================================================
-
     def record_task(self, content: str, lark_id: str = "", status: str = "todo", due_date: str = "无",
                     priority: int = 2) -> ToolResponse:
         """
-        记录一条【任务 (Task)】。
-
-        Args:
-            content: 任务标题/内容 (请勿包含 LarkID！)
-            lark_id: 飞书任务的 GUID (请填在这里，不要填在 content 里)
-            status: 状态
-            due_date: 截止日期
-            priority: 优先级
+        记录或更新一条【任务 (Task)】。
+        如果 lark_id 已存在，则覆盖更新；否则新建。
         """
-        # 👈 这里参数名和 SQL 都改为了 lark_id
+        # 1. 检查是否存在 (基于 lark_id)
+        if lark_id:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT id FROM tasks WHERE lark_id = ?", (lark_id,))
+            row = cursor.fetchone()
+
+            if row:
+                # [Upsert] 存在则更新
+                db_id = row['id']
+                self._execute_with_retry(
+                    "UPDATE tasks SET content=?, status=?, due_date=?, priority=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (content, status, due_date, priority, db_id)
+                )
+                return ToolResponse(
+                    content=[TextBlock(type="text", text=f"✅ 已更新任务 DB_ID:{db_id} | 飞书ID:{lark_id}")])
+
+        # 2. 不存在 (或没给 lark_id)，则插入
         cursor = self._execute_with_retry(
             "INSERT INTO tasks (agent_name, content, lark_id, status, due_date, priority) VALUES (?, ?, ?, ?, ?, ?)",
             (self.agent_name, content, lark_id, status, due_date, priority)
         )
         return ToolResponse(
-            content=[TextBlock(type="text", text=f"✅ 已记录任务 DB_ID:{cursor.lastrowid} | 飞书ID:{lark_id or '无'}")])
+            content=[TextBlock(type="text", text=f"✅ 已新建任务 DB_ID:{cursor.lastrowid} | 飞书ID:{lark_id or '无'}")])
 
     def record_calendar_event(self, content: str, start_time: str, end_time: str,
                               lark_event_id: str = "") -> ToolResponse:
-        """记录一条【日程 (Calendar)】。"""
+        """
+        记录或更新一条【日程 (Calendar)】。
+        如果 lark_event_id 已存在，则覆盖更新。
+        """
+        # 1. 检查是否存在
+        if lark_event_id:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT id FROM calendars WHERE lark_event_id = ?", (lark_event_id,))
+            row = cursor.fetchone()
+
+            if row:
+                # [Upsert] 存在则更新
+                db_id = row['id']
+                self._execute_with_retry(
+                    "UPDATE calendars SET content=?, start_time=?, end_time=? WHERE id=?",
+                    (content, start_time, end_time, db_id)
+                )
+                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 已更新日程 DB_ID:{db_id}")])
+
+        # 2. 插入新纪录
         self._execute_with_retry(
             "INSERT INTO calendars (agent_name, content, start_time, end_time, lark_event_id) VALUES (?, ?, ?, ?, ?)",
             (self.agent_name, content, start_time, end_time, lark_event_id)
         )
-        return ToolResponse(content=[TextBlock(type="text", text=f"✅ 已记录日程: {content}")])
+        return ToolResponse(content=[TextBlock(type="text", text=f"✅ 已新建日程: {content}")])
 
     # =================================================
     # 📖 读取工具 (Read Tools)
     # =================================================
+
+    def query_note(self, table_name: str, filter_conditions: dict = None) -> ToolResponse:
+        """
+        [通用工具] 根据条件查询数据库中的特定表格。
+
+        Args:
+            table_name: 目标表名 (如 'tasks', 'calendars', 'patterns')
+            filter_conditions: 筛选条件字典。例如 {"status": "todo"} 或 {"id": 1}。留空则查询所有。
+        """
+        try:
+            # 1. 安全检查：防止查询不存在的表
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?;", (table_name,))
+            if not cursor.fetchone():
+                return ToolResponse(content=[TextBlock(type="text", text=f"❌ 错误：表 '{table_name}' 不存在。")])
+
+            # 2. 构建 SQL 语句
+            sql = f"SELECT * FROM {table_name}"
+            params = []
+
+            if filter_conditions:
+                clauses = []
+                for k, v in filter_conditions.items():
+                    # 简单的等于查询，如果需要更复杂(如包含、大于)，可以在这里扩展
+                    clauses.append(f"{k} = ?")
+                    params.append(v)
+
+                if clauses:
+                    sql += " WHERE " + " AND ".join(clauses)
+
+            # 限制条数防止 Token 爆炸
+            sql += " ORDER BY id DESC LIMIT 20"
+
+            # 3. 执行查询
+            # 使用 row_factory 确保结果是字典形式，方便阅读
+            self.conn.row_factory = sqlite3.Row
+            cur = self.conn.cursor()  # 重新获取 cursor 以应用 row_factory
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+
+            # 4. 格式化结果
+            if not rows:
+                return ToolResponse(content=[TextBlock(type="text", text=f"📭 表 '{table_name}' 中未找到匹配记录。")])
+
+            # 转为 JSON 字符串
+            result_list = [dict(row) for row in rows]
+            json_result = json.dumps(result_list, ensure_ascii=False, indent=2)
+
+            return ToolResponse(content=[TextBlock(type="text", text=f"✅ 查询结果 ({len(rows)}条):\n{json_result}")])
+
+        except Exception as e:
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 查询异常: {str(e)}")])
 
     def read_notebook(self) -> ToolResponse:
         """读取笔记本内容"""
@@ -203,7 +312,7 @@ class AgentNotebook:
         lines.append(f"\n📅 === 近期日程 (Calendars) ===")
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute(
-            "SELECT content, start_time, end_time, lark_event_id FROM calendars WHERE agent_name=? AND end_time > ? ORDER BY start_time ASC LIMIT 5",
+            "SELECT content, start_time, end_time, lark_event_id FROM calendars WHERE agent_name=? AND end_time > ? ORDER BY start_time ASC LIMIT 20",
             (self.agent_name, now_str))
         rows = cursor.fetchall()
         if rows:
@@ -245,6 +354,53 @@ class AgentNotebook:
             lines.append("(暂无)")
 
         return ToolResponse(content=[TextBlock(type="text", text="\n".join(lines))])
+
+    # =================================================
+    # 🗑️ 删除工具 (Delete Tool) - 新增
+    # =================================================
+
+    def delete_from_database(self, table_name: str, conditions: dict) -> ToolResponse:
+        """
+        [通用工具] 从数据库删除指定记录。
+
+        Args:
+            table_name: 表名 (tasks, calendars, etc.)
+            conditions: 删除条件字典，例如 {"id": 12} 或 {"lark_id": "xxx"}。
+                        ⚠️ 警告：必须提供至少一个条件，禁止空条件删除全表！
+        """
+        if not conditions:
+            return ToolResponse(
+                content=[TextBlock(type="text", text="❌ 拒绝操作：必须提供删除条件 (conditions)，防止误删全表。")])
+
+        try:
+            # 1. 检查表是否存在 (安全检查)
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?;", (table_name,))
+            if not cursor.fetchone():
+                return ToolResponse(content=[TextBlock(type="text", text=f"❌ 表 '{table_name}' 不存在")])
+
+            # 2. 拼装 SQL
+            clauses = []
+            params = []
+            for k, v in conditions.items():
+                clauses.append(f"{k} = ?")
+                params.append(v)
+
+            where_sql = " AND ".join(clauses)
+            sql = f"DELETE FROM {table_name} WHERE {where_sql}"
+
+            # 3. 执行删除
+            cursor = self._execute_with_retry(sql, tuple(params))
+
+            if cursor.rowcount > 0:
+                return ToolResponse(content=[
+                    TextBlock(type="text", text=f"✅ 删除成功：已从 '{table_name}' 移除 {cursor.rowcount} 条记录。")])
+            else:
+                return ToolResponse(content=[
+                    TextBlock(type="text", text=f"⚠️ 删除无效：在 '{table_name}' 中未找到匹配 {conditions} 的记录。")])
+
+        except Exception as e:
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 删除出错: {e}")])
 
     # =================================================
     # ⚙️ 其他辅助方法 (修复 Missing Methods)
