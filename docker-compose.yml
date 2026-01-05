@@ -26,14 +26,14 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - PYTHONPATH=/app
-      - # 飞书配置
-      - SCHEDULER_APP_ID=${SCHEDULER_APP_ID}
-      - SCHEDULER_APP_SECRET=${SCHEDULER_APP_SECRET}
-      - USER_OPEN_ID=${USER_OPEN_ID}
+      # 飞书配置
+      - SCHEDULER_APP_ID=${SCHEDULER_APP_ID:-}
+      - SCHEDULER_APP_SECRET=${SCHEDULER_APP_SECRET:-}
+      - USER_OPEN_ID=${USER_OPEN_ID:-}
 
-      - # 模型配置
-      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
-      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      # 模型配置
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:-}
 
     volumes:
       - agent_data:/app/data
