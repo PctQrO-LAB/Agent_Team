@@ -174,63 +174,41 @@ class AgentNotebook:
     # =================================================
     # 📝 写入工具 (Write Tools)
     # =================================================
-    def record_task(self, content: str, lark_id: str = "", status: str = "todo", due_date: str = "无",
-                    priority: int = 2) -> ToolResponse:
+    def save_to_note(self, table_name: str, data: dict) -> ToolResponse:
         """
-        记录或更新一条【任务 (Task)】。
-        如果 lark_id 已存在，则覆盖更新；否则新建。
+        [通用工具] 保存数据到指定表格。
+        支持自动去重 (Upsert)：如果数据中包含唯一索引字段 (如 lark_id)，则更新旧记录；否则新建。
+
+        Args:
+            table_name: 目标表名 (如 'tasks', 'calendars')
+            data: 要写入的字段字典，例如 {"content": "买奶茶", "lark_id": "xxx", "status": "todo"}
         """
-        # 1. 检查是否存在 (基于 lark_id)
-        if lark_id:
+        try:
+            # 1. 安全检查：表是否存在
             cursor = self.conn.cursor()
-            cursor.execute("SELECT id FROM tasks WHERE lark_id = ?", (lark_id,))
-            row = cursor.fetchone()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?;", (table_name,))
+            if not cursor.fetchone():
+                return ToolResponse(content=[TextBlock(type="text", text=f"❌ 错误：表 '{table_name}' 不存在。")])
 
-            if row:
-                # [Upsert] 存在则更新
-                db_id = row['id']
-                self._execute_with_retry(
-                    "UPDATE tasks SET content=?, status=?, due_date=?, priority=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                    (content, status, due_date, priority, db_id)
-                )
-                return ToolResponse(
-                    content=[TextBlock(type="text", text=f"✅ 已更新任务 DB_ID:{db_id} | 飞书ID:{lark_id}")])
+            # 2. 自动补全基础字段 (如 updated_at)
+            # 如果是 tasks 表，且没有提供 updated_at，自动补全
+            if table_name == 'tasks' and 'updated_at' not in data:
+                data['updated_at'] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 2. 不存在 (或没给 lark_id)，则插入
-        cursor = self._execute_with_retry(
-            "INSERT INTO tasks (agent_name, content, lark_id, status, due_date, priority) VALUES (?, ?, ?, ?, ?, ?)",
-            (self.agent_name, content, lark_id, status, due_date, priority)
-        )
-        return ToolResponse(
-            content=[TextBlock(type="text", text=f"✅ 已新建任务 DB_ID:{cursor.lastrowid} | 飞书ID:{lark_id or '无'}")])
+            # 3. 动态拼装 SQL (INSERT OR REPLACE)
+            columns = list(data.keys())
+            placeholders = ["?"] * len(columns)
+            values = list(data.values())
 
-    def record_calendar_event(self, content: str, start_time: str, end_time: str,
-                              lark_event_id: str = "") -> ToolResponse:
-        """
-        记录或更新一条【日程 (Calendar)】。
-        如果 lark_event_id 已存在，则覆盖更新。
-        """
-        # 1. 检查是否存在
-        if lark_event_id:
-            cursor = self.conn.cursor()
-            cursor.execute("SELECT id FROM calendars WHERE lark_event_id = ?", (lark_event_id,))
-            row = cursor.fetchone()
+            sql = f"INSERT OR REPLACE INTO {table_name} ({', '.join(columns)}) VALUES ({', '.join(placeholders)})"
 
-            if row:
-                # [Upsert] 存在则更新
-                db_id = row['id']
-                self._execute_with_retry(
-                    "UPDATE calendars SET content=?, start_time=?, end_time=? WHERE id=?",
-                    (content, start_time, end_time, db_id)
-                )
-                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 已更新日程 DB_ID:{db_id}")])
+            # 4. 执行
+            self._execute_with_retry(sql, tuple(values))
 
-        # 2. 插入新纪录
-        self._execute_with_retry(
-            "INSERT INTO calendars (agent_name, content, start_time, end_time, lark_event_id) VALUES (?, ?, ?, ?, ?)",
-            (self.agent_name, content, start_time, end_time, lark_event_id)
-        )
-        return ToolResponse(content=[TextBlock(type="text", text=f"✅ 已新建日程: {content}")])
+            return ToolResponse(content=[TextBlock(type="text", text=f"✅ 数据已保存至 '{table_name}'")])
+
+        except Exception as e:
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 保存失败: {e} (请检查字段名是否正确)")])
 
     # =================================================
     # 📖 读取工具 (Read Tools)
@@ -288,7 +266,7 @@ class AgentNotebook:
         except Exception as e:
             return ToolResponse(content=[TextBlock(type="text", text=f"❌ 查询异常: {str(e)}")])
 
-    def read_notebook(self) -> ToolResponse:
+    def read_note(self) -> ToolResponse:
         """读取笔记本内容"""
         cursor = self.conn.cursor()
         lines = []
@@ -359,7 +337,7 @@ class AgentNotebook:
     # 🗑️ 删除工具 (Delete Tool) - 新增
     # =================================================
 
-    def delete_from_database(self, table_name: str, conditions: dict) -> ToolResponse:
+    def delete_from_note(self, table_name: str, conditions: dict) -> ToolResponse:
         """
         [通用工具] 从数据库删除指定记录。
 

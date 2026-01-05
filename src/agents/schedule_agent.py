@@ -1,11 +1,9 @@
-import sys
 import os
-import asyncio
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # --- AgentScope ---
-from agentscope.agent import ReActAgent, AgentBase
+from agentscope.agent import ReActAgent
 from agentscope.tool import Toolkit
 from agentscope.model import OpenAIChatModel
 from agentscope.memory import InMemoryMemory, Mem0LongTermMemory
@@ -234,10 +232,10 @@ class ScheduleAgent(ReActAgent):
             lark_tool.get_calendar_events, lark_tool.create_calendar_event, lark_tool.delete_calendar_event,
             lark_tool.get_tasks, lark_tool.create_task, lark_tool.delete_task,
             lark_tool.debug_user_identity,
-            notebook.read_notebook, notebook.record_task, notebook.update_task_status,
-            notebook.save_memento, notebook.record_calendar_event, notebook.add_pattern,
+            notebook.read_note, notebook.save_to_note,
+            notebook.save_memento, notebook.add_pattern,
             notebook.promote_pattern_to_memory, notebook.update_project_status,
-            notebook.query_note, notebook.delete_from_database,
+            notebook.query_note, notebook.delete_from_note,
             clock_tool.get_current_datetime,
         ]
         for t in tools_list:
