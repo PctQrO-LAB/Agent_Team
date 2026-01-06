@@ -146,7 +146,14 @@ class ScheduleAgent(ReActAgent):
 
             async def trigger_report(report_type: str, prompt: str):
                 print(f"⏰ [{self.name}] 生物钟触发: {report_type}")
-                current_time_str = ClockTool().get_current_datetime().content[0].text
+                time_content = ClockTool().get_current_datetime().content[0]
+
+                # 兼容处理：如果是对象则用 .text，如果是字典则用 .get("text")
+                if isinstance(time_content, dict):
+                    current_time_str = time_content.get("text")
+                else:
+                    current_time_str = time_content.text
+
                 full_prompt = f"【系统时间: {current_time_str}】\n{prompt}"
                 msg = Msg(name="system_clock", content=full_prompt, role="user")
 
@@ -167,7 +174,7 @@ class ScheduleAgent(ReActAgent):
                     # [新增] 清理上下文
                     self.current_chat_id = None
 
-            self.scheduler.add_job(trigger_report, 'cron', hour=8, minute=0, args=["晨报", "[系统指令] 晨报时间。请读取笔记本，审计今日日程，并给出排程建议。"])
+            self.scheduler.add_job(trigger_report, 'cron', hour=0, minute=43, args=["晨报", "[系统指令] 晨报时间。请读取笔记本，审计今日日程，并给出排程建议。"])
             self.scheduler.add_job(trigger_report, 'cron', hour=12, minute=0, args=["午报", "[系统指令] 午报时间。请检查上午完成情况，确认下午安排。"])
             self.scheduler.add_job(trigger_report, 'cron', hour=20, minute=0, args=["晚报", "[系统指令] 晚报时间。请总结全天工作，提取行为规律(add_pattern)，并清理已完成事项。"])
 
