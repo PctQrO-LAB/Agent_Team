@@ -249,7 +249,9 @@ class ScheduleAgent(ReActAgent):
             toolkit.register_tool_function(t)
 
         dashscope_key = os.environ.get("DASHSCOPE_API_KEY")
-        embedding_model = DashScopeTextEmbedding(model_name="text-embedding-v4", api_key=dashscope_key)
+        embedding_model = DashScopeTextEmbedding(model_name="text-embedding-v2",
+                                                 api_key=dashscope_key)
+
         llm_config = load_model_config("deepseek_config")
         llm_config.pop("config_name", None)
         mem0_llm = OpenAIChatModel(**llm_config)
