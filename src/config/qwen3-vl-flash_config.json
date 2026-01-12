@@ -1,0 +1,13 @@
+[
+  {
+    "config_name": "qwen3-vl_config",
+    "model_name": "qwen3-vl-flash",
+    "api_key_env": "DASHSCOPE_API_KEY",
+    "app_id": "PROMPTER_APP_ID",
+    "app_secret": "PROMPTER_APP_SECRET",
+    "generate_args": {
+      "temperature": 0.1
+    },
+    "stream": false
+  }
+]
