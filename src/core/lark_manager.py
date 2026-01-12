@@ -50,8 +50,24 @@ class LarkManager:
             message = event.message
             content_json = json.loads(message.content)
 
-            # A. 提取基础信息
-            raw_text = content_json.get("text", "").strip()
+            # --- 核心修改开始 ---
+            msg_type = message.msg_type
+            raw_text = ""
+
+            if msg_type == "text":
+                raw_text = content_json.get("text", "").strip()
+            elif msg_type == "image":
+                # 如果是图片，我们构造一个特殊的“系统提示符”给 Agent
+                image_key = content_json.get("image_key")
+                raw_text = f"[System: User sent an image. MessageID: {message.message_id}, ImageKey: {image_key}]"
+            elif msg_type == "post":
+                # (可选) 处理富文本 Post
+                raw_text = self._parse_post_content(content_json)
+            else:
+                # 其他类型暂时忽略或提示
+                raw_text = f"[System: Receive unsupported message type: {msg_type}]"
+            # --- 核心修改结束 ---
+
             sender_id = event.sender.sender_id.open_id
             chat_id = message.chat_id
 
@@ -75,6 +91,20 @@ class LarkManager:
 
         except Exception as e:
             logger.error(f"❌ 消息解析失败: {e}")
+
+            # (可选) 简单的 Post 解析辅助函数
+
+        def _parse_post_content(self, content_json):
+            # 简单实现，提取 Post 里的纯文本
+            try:
+                text_elems = []
+                for lines in content_json.get("content", []):
+                    for elem in lines:
+                        if elem["tag"] == "text":
+                            text_elems.append(elem["text"])
+                return "\n".join(text_elems)
+            except:
+                return "[Complex Post Message]"
 
     # ==========================
     # 2. 输出清洗 (Any -> Card/Text)
