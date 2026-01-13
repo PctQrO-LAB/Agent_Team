@@ -37,6 +37,7 @@ services:
 
     volumes:
       - agent_data:/app/data
+      - /Users/roomserver/Documents/AIGC:/app/production
 
     # 保持容器运行，方便 PyCharm 连接
     # 这里的 command 可以是你的主程序，也可以是 tail -f /dev/null (空转等待调试)

@@ -2,6 +2,13 @@
   "name": "OrbStake Environment",
   "image": "python:3.11-slim",
   "runArgs": ["--platform=linux/arm64"],
+
+  // 🔥 新增：在这里显式挂载你的本地目录
+  // source=你的Mac路径, target=容器内路径
+  "mounts": [
+    "source=/Users/apple/Documents/AIGC,target=/app/production,type=bind"
+  ],
+
   "features": {
     "ghcr.io/devcontainers/features/git:1": {}
   },

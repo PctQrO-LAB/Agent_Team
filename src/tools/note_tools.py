@@ -10,14 +10,6 @@ from agentscope.message import TextBlock
 
 
 class AgentNotebook:
-    """
-    Agent 专属的 SQLite 笔记本工具类 (v2.1 修复版)。
-
-    更新日志：
-    1. [Fix] 修复了缺少 promote_pattern_to_memory 导致的 AttributeError。
-    2. [Schema] 将 tasks 表的 lark_task_id 重命名为 lark_id。
-    3. [Stability] 保留了写入重试机制。
-    """
 
     def __init__(self, agent_name: str, db_name: str = "agent_notes.db"):
         self.agent_name = agent_name
@@ -126,6 +118,28 @@ class AgentNotebook:
                        )
                        ''')
 
+        # === 6.媒资资产表 (production_assets) ===
+        # 核心作用：连接“物理文件路径”与“逻辑状态”
+        cursor.execute('''
+                       CREATE TABLE IF NOT EXISTS production_assets
+                       (
+                           id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                           project        TEXT NOT NULL,                   -- 项目名 (如: WanderingEarth3)
+                           scene          TEXT NOT NULL,                   -- 场 (如: Scene_01)
+                           shot           TEXT NOT NULL,                   -- 镜 (如: Shot_05)
+                           version        INTEGER   DEFAULT 1,             -- 版本号
+
+                           prompt_path    TEXT,                            -- 提示词文件的绝对路径
+                           image_path     TEXT,                            -- 图片文件的绝对路径 (生成后回填)
+
+                           status         TEXT      DEFAULT 'pending_gen', -- 状态机: pending_gen -> generated -> audited
+                           audit_feedback TEXT,                            -- 审核意见
+
+                           created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                           updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                       )
+                       ''')
+
         self.conn.commit()
 
     def _execute_with_retry(self, sql: str, params: tuple = (), max_retries=5):
@@ -209,6 +223,36 @@ class AgentNotebook:
 
         except Exception as e:
             return ToolResponse(content=[TextBlock(type="text", text=f"❌ 保存失败: {e} (请检查字段名是否正确)")])
+
+    def register_asset(self, project: str, scene: str, shot: str, prompt_path: str, version: int = 1) -> ToolResponse:
+        """
+        [资产注册] 在数据库中创建新的资产索引记录。
+
+        当物理文件创建完成后，调用此方法在 SQLite 的 `production_assets` 表中记录该资产
+        的元数据。此时资产状态将被初始化为 'pending_gen' (待生成)。
+
+        Args:
+            project (str): 项目名称。
+            scene (str): 场次代码。
+            shot (str): 镜头代码。
+            prompt_path (str): 对应的 prompt.json 文件的绝对路径。
+            version (int, optional): 版本号。默认为 1。
+
+        Returns:
+            ToolResponse: 包含新生成的资产 ID 的响应对象。
+                          Content 示例: "✅ 资产已注册 ID: 42 (Status: pending_gen)"
+        """
+        try:
+            sql = '''
+                  INSERT INTO production_assets (project, scene, shot, version, prompt_path, status)
+                  VALUES (?, ?, ?, ?, ?, 'pending_gen') \
+                  '''
+            cursor = self._execute_with_retry(sql, (project, scene, shot, version, prompt_path))
+            asset_id = cursor.lastrowid
+            return ToolResponse(
+                content=[TextBlock(type="text", text=f"✅ 资产已注册 ID: {asset_id} (Status: pending_gen)")])
+        except Exception as e:
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 注册失败: {e}")])
 
     # =================================================
     # 📖 读取工具 (Read Tools)
@@ -332,6 +376,30 @@ class AgentNotebook:
             lines.append("(暂无)")
 
         return ToolResponse(content=[TextBlock(type="text", text="\n".join(lines))])
+
+    def get_latest_version(self, project: str, scene: str, shot: str) -> int:
+        """
+        [版本查询] 获取指定镜头的当前最大版本号。
+
+        用于在创建新版本前，查询数据库中已存在的最大版本号，以便计算下一个版本号（max + 1）。
+        如果数据库中没有任何记录，则返回 0。
+
+        Args:
+            project (str): 项目名称。
+            scene (str): 场次代码。
+            shot (str): 镜头代码。
+
+        Returns:
+            int: 当前最大的版本号整数。如果未找到记录，返回 0。
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT MAX(version) FROM production_assets WHERE project=? AND scene=? AND shot=?",
+            (project, scene, shot)
+        )
+        row = cursor.fetchone()
+        return row[0] if row[0] else 0
+
 
     # =================================================
     # 🗑️ 删除工具 (Delete Tool) - 新增
