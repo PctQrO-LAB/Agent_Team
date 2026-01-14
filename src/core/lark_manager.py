@@ -5,7 +5,13 @@ import threading
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import *
 from lark_oapi.ws import Client as WebSocketClient
-from typing import Any, Optional, Tuple
+from typing import Any
+
+# 🔥 引入补丁
+try:
+    import nest_asyncio
+except ImportError:
+    nest_asyncio = None
 
 logger = logging.getLogger("LarkManager")
 
@@ -13,36 +19,78 @@ logger = logging.getLogger("LarkManager")
 class LarkManager:
     """
     [飞书翻译器]
-    职责：
-    1. 负责与飞书服务器建立连接 (WebSocket)。
-    2. 负责把飞书的原始 Event 清洗成纯文本 (Input Translation)。
-    3. 负责把 Agent 的各种奇怪返回清洗成纯文本并发送 (Output Translation)。
+    修复版 v4.0: 引入 nest_asyncio 彻底解决 Loop 冲突
     """
 
-    def __init__(self, app_id: str, app_secret: str):
+    def __init__(self, app_id: str, app_secret: str, bot_name: str = None):
         self.app_id = app_id
         self.app_secret = app_secret
+        self.bot_name = bot_name
         self.message_handler = None
-        self.ws_client = None
 
-        # 初始化 API 客户端 (用于发消息)
+        # 1. 捕获主线程 Loop
+        try:
+            self.main_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.main_loop = asyncio.get_event_loop()
+
+        self.ws_client = None
+        self.event_dispatcher = None
+
         self.api_client = lark.Client.builder() \
             .app_id(app_id).app_secret(app_secret).log_level(lark.LogLevel.INFO).build()
 
-        # 初始化 WebSocket 客户端 (用于收消息)
-        self.event_dispatcher = lark.EventDispatcherHandler.builder("", "") \
-            .register_p2_im_message_receive_v1(self._on_ws_message) \
-            .build()
+    # ==========================
+    # 1. 启动监听
+    # ==========================
+    def start(self):
+        """启动 WebSocket 长连接"""
 
-        self.ws_client = WebSocketClient(
-            app_id, app_secret, event_handler=self.event_dispatcher, log_level=lark.LogLevel.INFO
-        )
+        def _run_isolated_client():
+            # [Step A] 创建新 Loop
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+
+            # 🔥 [关键补丁] 允许 Loop 嵌套/重入
+            if nest_asyncio:
+                nest_asyncio.apply(new_loop)
+            else:
+                logger.warning("⚠️ 未检测到 nest_asyncio，可能会导致 Loop 冲突！建议 pip install nest_asyncio")
+
+            thread_id = threading.get_ident()
+            logger.info(f"🧵 [Thread-{thread_id}] 正在启动 WebSocket (AppID: {self.app_id[-6:]})...")
+
+            try:
+                # [Step B] 子线程创建组件
+                self.event_dispatcher = lark.EventDispatcherHandler.builder("", "") \
+                    .register_p2_im_message_receive_v1(self._on_ws_message) \
+                    .build()
+
+                self.ws_client = WebSocketClient(
+                    self.app_id,
+                    self.app_secret,
+                    event_handler=self.event_dispatcher,
+                    log_level=lark.LogLevel.INFO
+                )
+
+                # [Step C] 启动 (阻塞)
+                self.ws_client.start()
+
+            except Exception as e:
+                logger.error(f"❌ WebSocket 在线程 {thread_id} 启动崩溃: {e}")
+            finally:
+                new_loop.close()
+
+
+
+        # 启动守护线程
+        t = threading.Thread(target=_run_isolated_client, daemon=True)
+        t.start()
 
     # ==========================
-    # 1. 输入清洗 (Event -> Text)
+    # 2. 消息清洗
     # ==========================
     def _on_ws_message(self, data: P2ImMessageReceiveV1) -> None:
-        """WebSocket 收到消息的回调"""
         if not self.message_handler: return
 
         try:
@@ -50,93 +98,89 @@ class LarkManager:
             message = event.message
             content_json = json.loads(message.content)
 
-            # --- 核心修改开始 ---
-            msg_type = message.msg_type
-            raw_text = ""
+            msg_type = message.message_type
 
+            raw_text = ""
             if msg_type == "text":
                 raw_text = content_json.get("text", "").strip()
             elif msg_type == "image":
-                # 如果是图片，我们构造一个特殊的“系统提示符”给 Agent
                 image_key = content_json.get("image_key")
                 raw_text = f"[System: User sent an image. MessageID: {message.message_id}, ImageKey: {image_key}]"
             elif msg_type == "post":
-                # (可选) 处理富文本 Post
                 raw_text = self._parse_post_content(content_json)
             else:
-                # 其他类型暂时忽略或提示
                 raw_text = f"[System: Receive unsupported message type: {msg_type}]"
-            # --- 核心修改结束 ---
 
             sender_id = event.sender.sender_id.open_id
             chat_id = message.chat_id
 
-            # B. 群聊 @ 清洗
+            # 群聊 @ 判断
             if message.chat_type == "group":
                 mentions = getattr(message, "mentions", [])
-                # 如果没 @ 机器人，或者是全员 @，都不理
                 if not mentions: return
 
-                # 把 "@机器人" 这个字符串从文本里抠掉
-                for mention in mentions:
-                    if mention.key:
-                        raw_text = raw_text.replace(mention.key, "").strip()
+                if self.bot_name:
+                    is_at_me = False
+                    for mention in mentions:
+                        # 调试日志
+                        if "Prompt" in str(self.bot_name):
+                            print(f"🧐 [NameCheck] 收到@: '{mention.name}' | 我的名字: '{self.bot_name}'")
 
-            # C. 丢给业务层 (Agent)
-            # 注意：这里我们使用了 asyncio.run_coroutine_threadsafe 跨线程调用
-            loop = asyncio.get_event_loop()
-            asyncio.run_coroutine_threadsafe(
-                self.message_handler(raw_text, sender_id, chat_id), loop
-            )
+                        if mention.name == self.bot_name:
+                            is_at_me = True
+                            if mention.key:
+                                raw_text = raw_text.replace(mention.key, "").strip()
+                    if not is_at_me: return
+                else:
+                    for mention in mentions:
+                        if mention.key:
+                            raw_text = raw_text.replace(mention.key, "").strip()
+
+            # 投递回主线程
+            if self.main_loop and not self.main_loop.is_closed():
+                asyncio.run_coroutine_threadsafe(
+                    self.message_handler(raw_text, sender_id, chat_id),
+                    self.main_loop
+                )
+            else:
+                logger.error("❌ 主线程 Loop 已关闭，无法处理消息")
 
         except Exception as e:
             logger.error(f"❌ 消息解析失败: {e}")
 
-            # (可选) 简单的 Post 解析辅助函数
-
-        def _parse_post_content(self, content_json):
-            # 简单实现，提取 Post 里的纯文本
-            try:
-                text_elems = []
-                for lines in content_json.get("content", []):
-                    for elem in lines:
-                        if elem["tag"] == "text":
-                            text_elems.append(elem["text"])
-                return "\n".join(text_elems)
-            except:
-                return "[Complex Post Message]"
+    def _parse_post_content(self, content_json):
+        try:
+            text_elems = []
+            for lines in content_json.get("content", []):
+                for elem in lines:
+                    if elem["tag"] == "text":
+                        text_elems.append(elem["text"])
+            return "\n".join(text_elems)
+        except:
+            return "[Complex Post Message]"
 
     # ==========================
-    # 2. 输出清洗 (Any -> Card/Text)
+    # 3. 发送回复
     # ==========================
     async def reply(self, chat_id: str, agent_response: Any):
-        """
-        [对外接口] 发送回复。会自动清洗 AgentScope 的复杂返回格式。
-        """
-        # A. 清洗 AgentScope 的 Response
         clean_text = ""
         if agent_response is None:
             clean_text = "🤖 (无内容)"
         elif isinstance(agent_response, str):
             clean_text = agent_response
         elif isinstance(agent_response, list):
-            # 提取 list 里所有的 text 字段
             texts = [item.get('text', '') for item in agent_response
                      if isinstance(item, dict) and item.get('type') == 'text']
             clean_text = "\n".join(texts)
-            if not clean_text: clean_text = str(agent_response)  # 兜底
+            if not clean_text: clean_text = str(agent_response)
         else:
             clean_text = str(agent_response)
 
-        # B. 发送
         if clean_text:
             await self._send_lark_card(chat_id, clean_text)
 
     async def _send_lark_card(self, receive_id: str, text: str):
-        """底层发送实现"""
-        # 自动判断 ID 类型：如果是 ou_ 开头则是 open_id，如果是 oc_ 开头则是 chat_id
         id_type = "open_id" if receive_id.startswith("ou_") else "chat_id"
-
         card_content = {
             "config": {"wide_screen_mode": True},
             "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": text}}]
@@ -148,19 +192,7 @@ class LarkManager:
                           .content(json.dumps(card_content)).build()) \
             .build()
 
-        # 异步调用
-        resp = await asyncio.to_thread(lambda: self.api_client.im.v1.message.create(req))
-        if not resp.success():
-            logger.error(f"❌ 发送失败: {resp.code} - {resp.msg}")
+        await asyncio.to_thread(lambda: self.api_client.im.v1.message.create(req))
 
-    # ==========================
-    # 3. 生命周期管理
-    # ==========================
     def bind_handler(self, async_func):
-        """绑定收到消息后的处理函数"""
         self.message_handler = async_func
-
-    def start(self):
-        """启动监听"""
-        t = threading.Thread(target=self.ws_client.start, daemon=True)
-        t.start()

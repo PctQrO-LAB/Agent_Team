@@ -18,6 +18,13 @@ from src.tools.note_tools import AgentNotebook
 from src.tools.clock_tool import ClockTool
 from src.core.lark_manager import LarkManager
 from agentscope.message import Msg
+try:
+        from mem0.configs.base import VectorStoreConfig
+        from mem0.configs.vector_stores.qdrant import QdrantConfig
+except ImportError:
+    print("❌ 严重错误: 无法导入 mem0 配置类，请检查依赖安装")
+
+
 
 
 class ScheduleAgent(ReActAgent):
@@ -217,6 +224,7 @@ class ScheduleAgent(ReActAgent):
         app_id = os.environ.get("SCHEDULER_APP_ID")
         app_secret = os.environ.get("SCHEDULER_APP_SECRET")
         user_id = os.environ.get("USER_OPEN_ID")
+        feishu_name = os.environ.get("SCHEDULER_FEISHU_NAME")
 
         if not app_id or not app_secret:
             print("⚠️ [Scheduler] 缺少环境变量配置，跳过初始化。")
@@ -254,15 +262,27 @@ class ScheduleAgent(ReActAgent):
         llm_config.pop("config_name", None)
         mem0_llm = OpenAIChatModel(**llm_config)
 
+        scheduler_db_path = "/app/data/mem0_scheduler_db"
+
+        if not os.path.exists(scheduler_db_path):
+            os.makedirs(scheduler_db_path, exist_ok=True)
+
+        vector_config_obj = VectorStoreConfig(
+            provider="qdrant",
+            config={
+                "path": scheduler_db_path
+            }
+        )
+
         memory = Mem0LongTermMemory(
             agent_name="Scheduler",
             user_name="User",
             model=mem0_llm,
             embedding_model=embedding_model,
-            on_disk=True,
+            vector_store_config=vector_config_obj  # 👈 传入构造好的对象
         )
 
         agent_instance = cls(name="Scheduler", sys_prompt=full_sys_prompt, toolkit=toolkit, memory=memory)
-        manager_instance = LarkManager(app_id, app_secret)
+        manager = LarkManager(app_id, app_secret, bot_name=feishu_name)
 
-        return {"name": "Scheduler", "agent": agent_instance, "manager": manager_instance}
+        return {"name": "Scheduler", "agent": agent_instance, "manager": manager}

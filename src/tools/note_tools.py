@@ -140,6 +140,33 @@ class AgentNotebook:
                        )
                        ''')
 
+        # === 7. 提示词模版表 (prompt_templates) ===
+        cursor.execute('''
+                       CREATE TABLE IF NOT EXISTS prompt_templates
+                       (
+                           id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                           model_key  TEXT NOT NULL UNIQUE,
+                           template   TEXT NOT NULL,
+                           remarks    TEXT,
+                           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                       )
+                       ''')
+
+        # 预制种子数据 (如果表是空的)
+        cursor.execute("SELECT count(*) FROM prompt_templates")
+        if cursor.fetchone()[0] == 0:
+            seed_data = [
+                ('mj', '/imagine prompt: {desc} --v 6.0 --ar 16:9 --style raw', 'Midjourney V6 通用'),
+                ('sd', '(masterpiece, best quality:1.2), {desc}, 8k wallpaper, cinematic lighting',
+                 'StableDiffusion XL'),
+                ('flux', '/imagine {desc} --model flux-pro', 'Flux Pro 模型')
+            ]
+            cursor.executemany(
+                "INSERT INTO prompt_templates (model_key, template, remarks) VALUES (?, ?, ?)",
+                seed_data
+            )
+            print("✅ [NoteTools] 已初始化默认绘图模版 (mj, sd, flux)")
+
         self.conn.commit()
 
     def _execute_with_retry(self, sql: str, params: tuple = (), max_retries=5):
@@ -392,13 +419,42 @@ class AgentNotebook:
         Returns:
             int: 当前最大的版本号整数。如果未找到记录，返回 0。
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT MAX(version) FROM production_assets WHERE project=? AND scene=? AND shot=?",
-            (project, scene, shot)
-        )
-        row = cursor.fetchone()
-        return row[0] if row[0] else 0
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT MAX(version) FROM production_assets WHERE project=? AND scene=? AND shot=?",
+                (project, scene, shot)
+            )
+            row = cursor.fetchone()
+            # 拿到整数
+            ver = row[0] if (row and row[0]) else 0
+
+            # 重点：必须包装成 TextBlock 返回给 LLM
+            # 我们返回一段人类可读的文本，Agent 会自己提取里面的数字
+            return ToolResponse(content=[TextBlock(type="text", text=str(ver))])
+        except Exception as e:
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 查询失败: {e}")])
+
+    def get_prompt_template(self, model_key: str) -> ToolResponse:
+        """
+        根据模型关键词获取 Prompt 模版。
+        Args:
+            model_key: 模型的简称，例如 'mj', 'sd', 'flux'。
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT template FROM prompt_templates WHERE model_key = ?", (model_key.lower(),))
+            row = cursor.fetchone()
+
+            if row:
+                return ToolResponse(content=[TextBlock(type="text", text=row[0])])
+            else:
+                cursor.execute("SELECT model_key FROM prompt_templates")
+                keys = [r[0] for r in cursor.fetchall()]
+                return ToolResponse(
+                    content=[TextBlock(type="text", text=f"❌ 未找到 '{model_key}' 的模版。可用模版: {', '.join(keys)}")])
+        except Exception as e:
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 查询模版出错: {e}")])
 
 
     # =================================================

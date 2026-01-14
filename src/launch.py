@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from agents.schedule_agent import ScheduleAgent
+from agents.prompt_agent import PromptAgent
 
 # from agents.coder_agent import CoderAgent
 
@@ -36,9 +37,10 @@ async def main():
     if sched_pack:
         services.append(sched_pack)
 
-    # 2. 尝试组装 Coder
-    # coder_pack = CoderAgent.build_from_env()
-    # if coder_pack: services.append(coder_pack)
+    # 2. 尝试组装 PromptAgent (新增)
+    prompt_pack = PromptAgent.build_from_env()
+    if prompt_pack:
+        services.append(prompt_pack)
 
     if not services:
         logger.error("❌ 无可用 Agent。")
