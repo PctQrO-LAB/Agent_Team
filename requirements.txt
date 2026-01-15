@@ -6,3 +6,4 @@ python-dotenv
 apscheduler
 mem0ai
 dotenv
+oss2

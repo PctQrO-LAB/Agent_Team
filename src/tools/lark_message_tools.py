@@ -1,14 +1,15 @@
+import os
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import *
-import base64
 from agentscope.tool import ToolResponse
 from agentscope.message import TextBlock
+
 
 class LarkMessageTool:
     """
     飞书消息资源工具
-    用于下载聊天过程中产生的图片、文件等临时资源。
     """
+
     def __init__(self, app_id: str, app_secret: str):
         self.client = lark.Client.builder() \
             .app_id(app_id) \
@@ -16,39 +17,40 @@ class LarkMessageTool:
             .log_level(lark.LogLevel.INFO) \
             .build()
 
+        self.image_save_dir = "/app/data/images"
+        if not os.path.exists(self.image_save_dir):
+            os.makedirs(self.image_save_dir, exist_ok=True)
+
     def download_image(self, message_id: str, image_key: str) -> ToolResponse:
-        """
-        下载飞书聊天中的图片，并转为 Base64 编码（供 VLM 模型使用）。
-        Args:
-            message_id: 消息 ID (必须提供，用于权限验证)
-            image_key: 图片的 Key
-        """
         try:
-            # 构造请求：获取消息中的资源
             req = GetMessageResourceRequest.builder() \
                 .message_id(message_id) \
                 .file_key(image_key) \
                 .type("image") \
                 .build()
 
-            # 发起下载
             resp = self.client.im.v1.message_resource.get(req)
-
             if not resp.success():
-                return ToolResponse(content=[TextBlock(type="text", text=f"❌ 图片下载失败: {resp.msg} (Code: {resp.code})")])
+                return ToolResponse(content=[TextBlock(type="text", text=f"❌ 下载失败: {resp.msg}")])
 
-            # 读取二进制流并转 Base64
-            image_bytes = resp.file.read()
-            base64_str = base64.b64encode(image_bytes).decode('utf-8')
+            # 保存文件
+            file_name = f"{message_id}_{image_key}.jpg"
+            file_path = os.path.join(self.image_save_dir, file_name)
+            with open(file_path, "wb") as f:
+                f.write(resp.file.read())
 
-            # 返回结果：为了防止 Log 爆炸，我们这里只返回部分信息，
-            # 真正的 Base64 数据通常会被 Agent 隐式处理，或者我们通过特殊标记返回
+            # 🔥 关键：返回标准 ImageBlock，但 source.url 是本地路径
+            # 这样 Agent 的记忆里只有这个短短的路径，不会爆炸
             return ToolResponse(content=[
-                TextBlock(type="text", text=f"✅ 图片已下载 (Size: {len(image_bytes)} bytes)"),
-                # 这里我们把 Base64 放在 content 里，AgentScope 的模型 wrapper 需要能识别这种格式
-                # 或者你可以直接返回 image_url 如果你的模型支持 URL
-                TextBlock(type="image", content=base64_str)
+                TextBlock(type="text", text=f"✅ 图片已就绪: {file_path}"),
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "url",
+                        "url": file_path  # 👈 本地路径，等待 ModelWrapper 处理
+                    }
+                }
             ])
 
         except Exception as e:
-            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 系统异常: {str(e)}")])
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 异常: {str(e)}")])

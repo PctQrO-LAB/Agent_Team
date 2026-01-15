@@ -5,10 +5,10 @@ from typing import Optional, Dict
 # AgentScope
 from agentscope.agent import ReActAgent
 from agentscope.tool import Toolkit
-from agentscope.model import OpenAIChatModel
+from agentscope.model import DashScopeChatModel
 from agentscope.memory import InMemoryMemory, Mem0LongTermMemory
 from agentscope.embedding import DashScopeTextEmbedding
-from agentscope.formatter import DeepSeekChatFormatter
+from agentscope.formatter import DashScopeChatFormatter
 from agentscope.message import Msg
 
 # 工具集 (注意文件名是 lark_message_tools)
@@ -31,9 +31,9 @@ class PromptAgent(ReActAgent):
     def __init__(self, name: str, toolkit: Toolkit, memory: Mem0LongTermMemory, sys_prompt: str = None):
         # 1. 加载模型 (这里我们复用 DeepSeek 作为“大脑”来思考逻辑)
         # 视觉模型只在 "Visual Model" 内部调用，ReAct 逻辑还是用文本模型更强
-        config_args = load_model_config("deepseek_config")
+        config_args = load_model_config("qwen3-vl_config")
         config_args.pop("config_name", None)
-        model_instance = OpenAIChatModel(**config_args)
+        model_instance = DashScopeChatModel(**config_args)
 
         use_prompt = sys_prompt if sys_prompt else PROMPT_SYSTEM_PROMPT
 
@@ -41,7 +41,7 @@ class PromptAgent(ReActAgent):
             name=name,
             sys_prompt=use_prompt,
             model=model_instance,
-            formatter=DeepSeekChatFormatter(),
+            formatter=DashScopeChatFormatter(),
             toolkit=toolkit,
             memory=InMemoryMemory(),
             long_term_memory=memory,  # 🔥 继承长期记忆
@@ -158,7 +158,6 @@ class PromptAgent(ReActAgent):
 
         # C. 注册工具
         tools_list = [
-            msg_tool.download_image,  # 核心视觉入口
             note_tool.get_prompt_template,
             note_tool.get_latest_version,  # 👈 刚才修复的那个方法
             note_tool.register_asset,
@@ -176,9 +175,9 @@ class PromptAgent(ReActAgent):
         embedding_model = DashScopeTextEmbedding(model_name="text-embedding-v2", api_key=dashscope_key)
 
         # 记忆的大脑 (DeepSeek)
-        llm_config = load_model_config("deepseek_config")
+        llm_config = load_model_config("qwen3-vl_config")
         llm_config.pop("config_name", None)
-        mem0_llm = OpenAIChatModel(**llm_config)
+        mem0_llm = DashScopeChatModel(**llm_config)
 
         prompter_db_path = "/app/data/mem0_prompter_db"
         if not os.path.exists(prompter_db_path):

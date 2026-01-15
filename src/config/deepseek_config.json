@@ -4,8 +4,6 @@
     "config_name": "deepseek_config",
     "model_name": "deepseek-chat",
     "api_key_env": "DEEPSEEK_API_KEY",
-    "app_id": "SCHEDULER_APP_ID",
-    "app_secret": "SCHEDULER_APP_SECRET",
     "client_kwargs": {
       "base_url": "https://api.deepseek.com"
     },
