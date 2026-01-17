@@ -276,47 +276,6 @@ class AgentNotebook:
         except Exception as e:
             return ToolResponse(content=[TextBlock(type="text", text=f"❌ 保存失败: {e} (请检查字段名是否正确)")])
 
-    def get_schedule(self, project: str, scene: str, shot: str, prompt_path: str, version: int = 1) -> ToolResponse:
-        """
-        [资产注册] 在数据库中创建新的资产索引记录。
-
-        当物理文件创建完成后，调用此方法在 SQLite 的 `production_assets` 表中记录该资产
-        的元数据。此时资产状态将被初始化为 'pending_gen' (待生成)。
-
-        Args:
-            project (str): 项目名称。
-            scene (str): 场次代码。
-            shot (str): 镜头代码。
-            prompt_path (str): 对应的 prompt.json 文件的绝对路径。
-            version (int, optional): 版本号。默认为 1。
-
-        Returns:
-            ToolResponse: 包含新生成的资产 ID 的响应对象。
-                          Content 示例: "✅ 资产已注册 ID: 42 (Status: pending_gen)"
-        """
-        try:
-            sql = '''
-                  INSERT INTO production_assets (project, scene, shot, version, prompt_path, status)
-                  VALUES (?, ?, ?, ?, ?, 'pending_gen') \
-                  '''
-            cursor = self._execute_with_retry(sql, (project, scene, shot, version, prompt_path))
-            asset_id = cursor.lastrowid
-            return ToolResponse(
-                content=[TextBlock(type="text", text=f"✅ 资产已注册 ID: {asset_id} (Status: pending_gen)")])
-        except Exception as e:
-            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 注册失败: {e}")])
-
-    def save_project(self, project_name: str, progress: str) -> ToolResponse:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT id FROM projects WHERE agent_name=? AND name=?", (self.agent_name, project_name))
-        row = cursor.fetchone()
-        if row:
-            self._execute_with_retry("UPDATE projects SET progress=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                                     (progress, row['id']))
-        else:
-            self._execute_with_retry("INSERT INTO projects (agent_name, name, progress) VALUES (?, ?, ?)", (self.agent_name, project_name, progress))
-        return ToolResponse(content=[TextBlock(type="text", text="✅ Project Updated")])
-
     def delete_schedule(self, table_name: str, conditions: dict) -> ToolResponse:
         """
         [通用工具] 从数据库删除指定记录。
@@ -359,6 +318,19 @@ class AgentNotebook:
 
         except Exception as e:
             return ToolResponse(content=[TextBlock(type="text", text=f"❌ 删除出错: {e}")])
+
+    def save_project(self, name: str, progress: str) -> ToolResponse:
+        """[存/改] 更新项目进度。"""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id FROM projects WHERE agent_name=? AND name=?", (self.agent_name, name))
+        row = cursor.fetchone()
+        if row:
+            self._execute_with_retry("UPDATE projects SET progress=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                                     (progress, row['id']))
+        else:
+            self._execute_with_retry("INSERT INTO projects (agent_name, name, progress) VALUES (?, ?, ?)",
+                                     (self.agent_name, name, progress))
+        return ToolResponse(content=[TextBlock(type="text", text=f"✅ 项目 '{name}' 进度已更新")])
 
     # =================================================
     # 🎬 场景管理工具 (Scene Manager) - 对应 ConceptAgent
