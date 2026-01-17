@@ -247,10 +247,10 @@ class ScheduleAgent(ReActAgent):
             lark_tool.get_calendar_events, lark_tool.create_calendar_event, lark_tool.delete_calendar_event,
             lark_tool.get_tasks, lark_tool.create_task, lark_tool.delete_task,
             lark_tool.debug_user_identity,
-            notebook.read_note, notebook.save_to_note,
+            notebook.get_schedule, notebook.save_schedule,notebook.get_dashboard,
             notebook.save_memento, notebook.add_pattern,
-            notebook.promote_pattern_to_memory, notebook.update_project_status,
-            notebook.query_note, notebook.delete_from_note,
+            notebook.promote_pattern_to_memory, notebook.save_project,
+            notebook.execute_sql_query, notebook.delete_schedule,
             clock_tool.get_current_datetime,
         ]
         for t in tools_list:
