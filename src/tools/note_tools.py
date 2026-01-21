@@ -7,6 +7,7 @@ from typing import List, Dict, Optional
 import json
 from agentscope.tool import ToolResponse
 from agentscope.message import TextBlock
+from src.core.file_manager import FileManager
 
 
 class AgentNotebook:
@@ -21,6 +22,8 @@ class AgentNotebook:
             os.makedirs(self.data_dir)
 
         self.db_path = os.path.join(self.data_dir, db_name)
+
+        self.file_manager = FileManager()
 
         # 2. 连接数据库
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
@@ -118,7 +121,7 @@ class AgentNotebook:
                        )
                        ''')
 
-        # === 7.媒资资产表 (production_assets) ===
+        # === 7.镜头表 (shot) ===
         # 核心作用：连接“物理文件路径”与“逻辑状态”
         cursor.execute('''
                        CREATE TABLE IF NOT EXISTS production_assets
@@ -152,23 +155,7 @@ class AgentNotebook:
                        )
                        ''')
 
-        # === 9. 图片参考记录表 (image_references) ===
-        # 用于记录 Agent 在构思或生成过程中使用的图片（如参考图、底图）
-        cursor.execute('''
-                       CREATE TABLE IF NOT EXISTS image_references
-                       (
-                           id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                           project    TEXT NOT NULL,
-                           scene      TEXT NOT NULL,
-                           shot       TEXT NOT NULL,
-                           image_url  TEXT NOT NULL,
-                           usage_type TEXT NOT NULL, -- 例如 'reference', 'img2img', 'controlnet'
-                           remark     TEXT,
-                           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                       )
-                       ''')
-
-        # === 10. 场景设定表 (scenes) ===
+        # === 9. 场景设定表 (scenes) ===
         # 记录每个“场”的宏观设定
         cursor.execute('''
                        CREATE TABLE IF NOT EXISTS scenes
@@ -188,6 +175,27 @@ class AgentNotebook:
 
                            -- 联合唯一索引：确保一个项目的一个场只有一条记录
                            UNIQUE (project, scene)
+                       )
+                       ''')
+
+        # === 10. 角色设定表 (scenes) ===
+        # 记录每个“角色”的设定
+        cursor.execute('''
+                       CREATE TABLE IF NOT EXISTS characters
+                       (
+                           id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                           project           TEXT NOT NULL,
+                           name              TEXT NOT NULL,
+
+                           -- 核心设定
+                           appearance_prompt TEXT, -- 外貌 Prompt (Lock)
+                           local_path        TEXT, -- 📍 [核心] 本地人设图路径
+
+                           features          TEXT, -- 特征标签
+                           status            TEXT      DEFAULT 'draft',
+                           updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                           UNIQUE (project, name)
                        )
                        ''')
 
@@ -533,6 +541,136 @@ class AgentNotebook:
             return ToolResponse(content=[TextBlock(type="text", text=f"🗑️ 已删除 {cursor.rowcount} 条镜头记录。")])
         except Exception as e:
             return ToolResponse(content=[TextBlock(type="text", text=f"❌ 删除镜头失败: {e}")])
+
+    # =================================================
+    # 💃 Character Tools (角色管理 - 本地优先版)
+    # =================================================
+
+    def save_character(self, project: str, name: str, appearance_prompt: str = None,
+                       local_path: str = None, features: str = None, status: str = None) -> ToolResponse:
+        """
+        [存/改] 保存角色设定。
+
+        注意：Agent 应先使用 FileTool 将图片保存到本地，拿到 local_path 后，
+        再调用此工具将路径存入数据库。
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT id FROM characters WHERE project=? AND name=?", (project, name))
+            row = cursor.fetchone()
+
+            if row:
+                # === 更新模式 ===
+                char_id = row[0]
+                update_fields = []
+                params = []
+
+                if appearance_prompt: update_fields.append("appearance_prompt=?"); params.append(appearance_prompt)
+                if features:          update_fields.append("features=?");          params.append(features)
+                if status:            update_fields.append("status=?");            params.append(status)
+
+                # 🔥 关键逻辑：如果更新了本地文件路径，必须作废旧的 OSS 缓存
+                if local_path:
+                    update_fields.append("local_path=?")
+                    params.append(local_path)
+                    update_fields.append("oss_url_cache=NULL")  # <--- 强制清空缓存
+
+                if not update_fields:
+                    return ToolResponse(content=[TextBlock(type="text", text="⚠️ 无变更。")])
+
+                update_fields.append("updated_at=CURRENT_TIMESTAMP")
+
+                sql = f"UPDATE characters SET {', '.join(update_fields)} WHERE id=?"
+                params.append(char_id)
+                self._execute_with_retry(sql, tuple(params))
+
+                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 角色 '{name}' 更新成功 (缓存已重置)")])
+
+            else:
+                # === 新建模式 ===
+                sql = '''
+                      INSERT INTO characters (project, name, appearance_prompt, local_path, features, status)
+                      VALUES (?, ?, ?, ?, ?, ?) \
+                      '''
+                self._execute_with_retry(sql,
+                                         (project, name, appearance_prompt, local_path, features, status or 'draft'))
+                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 新角色 '{name}' 创建成功")])
+
+        except Exception as e:
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 角色保存失败: {e}")])
+
+    def get_character(self, project: str, name: str) -> ToolResponse:
+        """
+        [查] 获取角色详情。
+
+        🔥 自动桥接机制：
+        Agent 调用此工具时，系统会自动检查 'oss_url_cache'。
+        如果缓存为空但有 'local_path'，系统会调用 FileManager 自动上传 OSS，
+        并将生成的 URL 更新回数据库，最后返回给 Agent。
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT * FROM characters WHERE project=? AND name=?", (project, name))
+            row = cursor.fetchone()
+
+            if row:
+                data = dict(row)
+                char_id = data['id']
+                local_path = data.get('local_path')
+                cached_url = data.get('oss_url_cache')
+
+                # === 桥接逻辑 Start ===
+                final_url = cached_url
+
+                # 如果没缓存，或者缓存看起来失效了，且本地有文件
+                # (这里简单判断 cached_url 是否为空，你也可以加过期时间判断)
+                if not final_url and local_path:
+                    # 1. 呼叫管家：把这个本地文件变现成 URL
+                    new_url = self.file_manager.get_file_url(local_path)
+
+                    if new_url:
+                        # 2. 回写数据库 (建立缓存)
+                        try:
+                            self._execute_with_retry(
+                                "UPDATE characters SET oss_url_cache=? WHERE id=?",
+                                (new_url, char_id)
+                            )
+                            final_url = new_url
+                        except Exception as db_e:
+                            print(f"⚠️ URL 缓存更新失败: {db_e}")
+                            final_url = new_url  # 即使存库失败，也要先把 URL 给 Agent 用
+
+                # === 桥接逻辑 End ===
+
+                # 构造返回给 Agent 的数据 (Agent 只关心 ref_image_url)
+                response_data = {
+                    "project": data['project'],
+                    "name": data['name'],
+                    "appearance_prompt": data['appearance_prompt'],
+                    "features": data['features'],
+                    "status": data['status'],
+                    "ref_image_url": final_url or "(无参考图)"  # Agent 看到的是这就字段
+                }
+
+                return ToolResponse(
+                    content=[TextBlock(type="text", text=json.dumps(response_data, indent=2, ensure_ascii=False))])
+            else:
+                return ToolResponse(content=[TextBlock(type="text", text=f"📭 未找到角色 '{name}'")])
+
+        except Exception as e:
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 查询角色失败: {e}")])
+
+    def del_character(self, project: str, name: str) -> ToolResponse:
+        """[删] 删除角色设定。"""
+        try:
+            sql = "DELETE FROM characters WHERE project=? AND name=?"
+            cursor = self._execute_with_retry(sql, (project, name))
+            if cursor.rowcount > 0:
+                return ToolResponse(content=[TextBlock(type="text", text=f"🗑️ 角色 '{name}' 已删除")])
+            else:
+                return ToolResponse(content=[TextBlock(type="text", text=f"⚠️ 未找到角色，删除无效")])
+        except Exception as e:
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 删除失败: {e}")])
 
     # =================================================
     # 🛠️ 系统配置工具 (System & Config) - 模版与通用

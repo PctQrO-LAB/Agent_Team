@@ -11,20 +11,10 @@ load_dotenv(os.path.join(root_dir, ".env"))
 
 
 def run_keeper(bot_type):
-    if bot_type == "scheduler":
-        APP_ID = os.environ.get("SCHEDULER_APP_ID")
-        APP_SECRET = os.environ.get("SCHEDULER_APP_SECRET")
-        name = "日程智能体"
-    else:
-        APP_ID = os.environ.get("PROMPTER_APP_ID")
-        APP_SECRET = os.environ.get("PROMPTER_APP_SECRET")
-        name = "提示词智能体"
+    APP_ID = os.getenv("STORYBOARD_APP_ID")
+    APP_SECRET = os.getenv("STORYBOARD_APP_SECRET")
 
-    if not APP_ID or not APP_SECRET:
-        print(f"❌ 未找到 {name} 的 ID 或 Secret，请检查 .env")
-        return
-
-    print(f"🔌 [{name}] 正在连接飞书 (AppID: {APP_ID})...")
+    print(f"🔌 正在连接飞书 (AppID: {APP_ID})...")
     print("⚠️  连接成功后，请立即去飞书后台点击【保存】！")
 
     # 极简配置，只为保持连接

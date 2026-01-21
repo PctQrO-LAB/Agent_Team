@@ -7,7 +7,10 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from agents.schedule_agent import ScheduleAgent
-from agents.prompt_agent import PromptAgent
+from agents.casting_agent import CastingAgent
+from agents.concept_agent import ConceptAgent
+from agents.storyboard_agent import StoryboardAgent
+
 
 # from agents.coder_agent import CoderAgent
 
@@ -37,10 +40,20 @@ async def main():
     if sched_pack:
         services.append(sched_pack)
 
-    # 2. 尝试组装 PromptAgent (新增)
-    prompt_pack = PromptAgent.build_from_env()
-    if prompt_pack:
-        services.append(prompt_pack)
+    # 3. 尝试组装 CastingAgent (新增)
+    casting_pack = CastingAgent.build_from_env()
+    if casting_pack:
+        services.append(casting_pack)
+
+    # 4. 尝试组装 ConceptAgent (新增)
+    concept_pack = ConceptAgent.build_from_env()
+    if concept_pack:
+        services.append(concept_pack)
+
+    # 5. 尝试组装 StoryboardAgent (新增)
+    storyboard_pack = StoryboardAgent.build_from_env()
+    if storyboard_pack:
+        services.append(storyboard_pack)
 
     if not services:
         logger.error("❌ 无可用 Agent。")

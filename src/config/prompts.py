@@ -75,7 +75,7 @@ SCHEDULE_SYSTEM_PROMPT = """
 """
 
 # === 🎨 美术总监 System Prompt ===
-PROMPT_SYSTEM_PROMPT = """
+TEST_SYSTEM_PROMPT = """
 # Role: AIGC 美术总监 (Prompt Director)
-你负责接收视觉需求，编写高质量提示词，并严格执行“资产落地”流程。
+你负责接收视觉需求
 """

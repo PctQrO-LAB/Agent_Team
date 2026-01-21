@@ -2,11 +2,9 @@ import os
 import json
 import logging
 import asyncio
-import threading
 import oss2
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import *
-from lark_oapi.ws import Client as WebSocketClient
 from typing import Any, Union, List, Dict
 
 # 引入 nest_asyncio
@@ -15,23 +13,25 @@ try:
 except ImportError:
     nest_asyncio = None
 
-logger = logging.getLogger("LarkManager")
+# 设置日志格式，移除统一的 Launcher logger，改为动态获取
+logging.basicConfig(level=logging.INFO)
 
 
 class LarkManager:
     """
-    [飞书网关 v8.0] 全能多模态版
-    特性：
-    1. 支持 Post 富文本解析（图文混排）。
-    2. 自动 OSS 上传。
-    3. 输出 AgentScope 标准 ImageBlock，彻底解决格式兼容问题。
+    [飞书网关 v10.0 - 多实例增强版]
+    1. 增加线程异常捕获，防止 WebSocket 静默崩溃。
+    2. 日志增加 bot_name 前缀，便于多 Agent 调试。
     """
 
-    def __init__(self, app_id: str, app_secret: str, bot_name: str = None):
+    def __init__(self, app_id: str, app_secret: str, bot_name: str = "UnknownBot"):
         self.app_id = app_id
         self.app_secret = app_secret
         self.bot_name = bot_name
         self.message_handler = None
+
+        # 独立的 Logger
+        self.logger = logging.getLogger(f"Lark_{bot_name}")
 
         # --- OSS 初始化 ---
         self.oss_bucket_name = os.environ.get("OSS_BUCKET_NAME")
@@ -44,47 +44,67 @@ class LarkManager:
             try:
                 auth = oss2.Auth(self.oss_key_id, self.oss_key_secret)
                 self.bucket = oss2.Bucket(auth, self.oss_endpoint, self.oss_bucket_name)
-                logger.info("☁️ [Init] OSS 服务已连接")
+                self.logger.info("☁️ [Init] OSS 服务已连接")
             except Exception as e:
-                logger.error(f"❌ [Init] OSS 连接失败: {e}")
+                self.logger.error(f"❌ [Init] OSS 连接失败: {e}")
 
-        # 捕获主循环
+        # --- 异步 Loop 获取 ---
         try:
             self.main_loop = asyncio.get_running_loop()
         except RuntimeError:
-            self.main_loop = asyncio.get_event_loop()
+            self.main_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.main_loop)
 
+        if nest_asyncio:
+            nest_asyncio.apply(self.main_loop)
+
+        # --- 1. HTTP Client ---
         self.api_client = lark.Client.builder() \
             .app_id(app_id).app_secret(app_secret).log_level(lark.LogLevel.INFO).build()
 
+        # --- 2. WebSocket Client ---
+        event_handler = lark.EventDispatcherHandler.builder("", "") \
+            .register_p2_im_message_receive_v1(self._on_ws_message) \
+            .build()
+
+        self.ws = lark.ws.Client(
+            app_id,
+            app_secret,
+            event_handler=event_handler,
+            log_level=lark.LogLevel.INFO
+        )
+
     def start(self):
-        """启动 WebSocket"""
+        """
+        [启动服务] 增加 Future 回调以捕获线程中的崩溃
+        """
+        if not self.ws:
+            self.logger.error("❌ WebSocket Client 未初始化")
+            return
 
-        def _run_isolated_client():
-            new_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(new_loop)
-            if nest_asyncio: nest_asyncio.apply(new_loop)
-
-            def _ignore_noise(loop, context):
-                if "Task.__wakeup" in context.get("message", ""): return
-                loop.default_exception_handler(context)
-
-            new_loop.set_exception_handler(_ignore_noise)
-
+        def _handle_ws_crash(future):
             try:
-                dispatcher = lark.EventDispatcherHandler.builder("", "") \
-                    .register_p2_im_message_receive_v1(self._on_ws_message).build()
-                client = WebSocketClient(self.app_id, self.app_secret, event_handler=dispatcher,
-                                         log_level=lark.LogLevel.INFO)
-                client.start()
+                future.result()  # 如果线程里抛出异常，这里会重新抛出
             except Exception as e:
-                logger.error(f"❌ WebSocket 崩溃: {e}")
-            finally:
-                new_loop.close()
+                self.logger.error(f"❌ 严重错误: WebSocket 进程意外崩溃! 错误: {e}", exc_info=True)
 
-        threading.Thread(target=_run_isolated_client, daemon=True).start()
+        try:
+            loop = asyncio.get_running_loop()
+            # 🔥 捕获 Future 对象
+            future = loop.run_in_executor(None, self.ws.start)
+            # 添加回调，如果线程挂了，通知主线程
+            future.add_done_callback(_handle_ws_crash)
+
+            self.logger.info(f"✅ WebSocket 服务已在后台启动")
+        except RuntimeError:
+            self.logger.warning(f"⚠️ 无运行中 Loop，降级为阻塞启动")
+            self.ws.start()
 
     def _on_ws_message(self, data: P2ImMessageReceiveV1) -> None:
+        """回调函数"""
+        # 🔥 调试日志：确认是否收到了底层事件
+        # self.logger.info("⚡ 收到底层 WebSocket 事件...")
+
         if not self.message_handler: return
         try:
             event = data.event
@@ -92,50 +112,53 @@ class LarkManager:
             content_json = json.loads(message.content)
             msg_type = message.message_type
 
-            # 默认为空列表
             msg_content = []
 
-            # --- 文本消息 ---
+            # A. 纯文本
             if msg_type == "text":
                 text = content_json.get("text", "").strip()
                 if text:
                     msg_content.append({"type": "text", "text": text})
 
-            # --- 图片消息 ---
+            # B. 图片
             elif msg_type == "image":
                 image_key = content_json.get("image_key")
-                # 上传并生成标准 Block
                 img_block = self._create_image_block(message.message_id, image_key)
                 if img_block:
-                    msg_content.append({"type": "text", "text": "User sent an image:"})  # 辅助文本
+                    msg_content.append({"type": "text", "text": "User sent an image:"})
                     msg_content.append(img_block)
                 else:
-                    msg_content.append({"type": "text", "text": f"[System: Image upload failed. Key: {image_key}]"})
+                    msg_content.append({"type": "text", "text": f"[System: Image upload failed]"})
 
-            # --- 🔥 Post 富文本 (图文混排修复) ---
+            # C. Post 富文本
             elif msg_type == "post":
-                # 🔥 修改点：传入 message.message_id
-                # 这样 _parse_post_content 才有权限去下载 Post 里的图片
                 msg_content = self._parse_post_content(content_json, message.message_id)
 
             else:
-                msg_content = [{"type": "text", "text": f"[System: Receive unsupported message type: {msg_type}]"}]
+                msg_content = [{"type": "text", "text": f"[Unsupported: {msg_type}]"}]
 
-            # --- 群聊过滤 ---
+            # D. 群聊过滤
             sender_id = event.sender.sender_id.open_id
             if message.chat_type == "group":
                 mentions = getattr(message, "mentions", [])
                 if not mentions: return
+                # 这里的 self.bot_name 是我们在 __init__ 里传入的名字
+                # 确保它和飞书群里 @ 的名字（或别名）一致，否则这里会过滤掉
                 if self.bot_name:
-                    is_at_me = any(m.name == self.bot_name for m in mentions)
-                    if not is_at_me: return
-                    # 清理 @文本 (针对 Text Block)
+                    # 模糊匹配：只要 mention 的 name 包含 bot_name 或者是 bot_name 的一部分
+                    is_at_me = any(self.bot_name in m.name or m.name in self.bot_name for m in mentions)
+                    if not is_at_me:
+                        # self.logger.debug(f"群聊消息忽略，未 @ 我 ({self.bot_name})")
+                        return
+
+                    # 清理 @文本
                     for block in msg_content:
                         if block.get("type") == "text":
                             for m in mentions:
                                 if m.key: block["text"] = block["text"].replace(m.key, "").strip()
 
-            # --- 投递 ---
+            # E. 投递
+            self.logger.info(f"📩 收到有效消息 (User: {sender_id}), 正在投递给 Agent...")
             if self.main_loop and not self.main_loop.is_closed():
                 asyncio.run_coroutine_threadsafe(
                     self.message_handler(msg_content, sender_id, message.chat_id),
@@ -143,10 +166,9 @@ class LarkManager:
                 )
 
         except Exception as e:
-            logger.error(f"消息处理异常: {e}")
+            self.logger.error(f"消息处理异常: {e}", exc_info=True)
 
     def _process_image_stream(self, message_id, image_key):
-        """下载流 -> 上传 OSS -> 返回 URL"""
         if not self.bucket: return None
         try:
             req = GetMessageResourceRequest.builder() \
@@ -158,81 +180,40 @@ class LarkManager:
             self.bucket.put_object(object_name, resp.file)
             return self.bucket.sign_url('GET', object_name, 3600)
         except Exception as e:
-            logger.error(f"OSS Error: {e}")
+            self.logger.error(f"OSS Error: {e}")
             return None
 
     def _create_image_block(self, message_id, image_key):
-        """辅助函数：生成 AgentScope 标准 ImageBlock"""
         url = self._process_image_stream(message_id, image_key)
         if url:
-            # 🔥 关键修正：使用 AgentScope 标准格式 (type='image', source={type='url'...})
-            # 这样 DashScopeChatFormatter 才能正确识别并转换
-            return {
-                "type": "image",
-                "source": {
-                    "type": "url",
-                    "url": url
-                }
-            }
+            return {"type": "image", "source": {"type": "url", "url": url}}
         return None
 
     def _parse_post_content(self, content_json, message_id):
-        """
-        解析 Post 富文本，支持提取文字和图片（自动上传 OSS）
-        返回: List[Dict] (符合 AgentScope 标准的多模态消息列表)
-        """
         msg_content = []
         try:
-            # Post 结构通常是: content -> list of lines -> list of elements
-            # 这是一个二维数组结构
             for lines in content_json.get("content", []):
                 for elem in lines:
-
-                    # A. 处理文字
                     if elem["tag"] == "text":
                         text = elem.get("text", "").strip()
-                        if text:
-                            msg_content.append({"type": "text", "text": text})
-
-                    # B. 🔥 处理图片 (新增逻辑)
+                        if text: msg_content.append({"type": "text", "text": text})
                     elif elem["tag"] == "img":
                         image_key = elem.get("image_key")
-
-                        # 1. 复用上传逻辑 (直接上云拿到 URL)
                         oss_url = self._process_image_stream(message_id, image_key)
-
-                        # 2. 构造标准 ImageBlock
                         if oss_url:
-                            msg_content.append({
-                                "type": "image",
-                                "source": {
-                                    "type": "url",
-                                    "url": oss_url
-                                }
-                            })
+                            msg_content.append({"type": "image", "source": {"type": "url", "url": oss_url}})
                         else:
-                            # 如果上传失败，留个占位符
-                            msg_content.append({"type": "text", "text": "[Image Upload Failed]"})
-
-        except Exception as e:
-            logger.error(f"Post 解析失败: {e}")
-            return [{"type": "text", "text": "[Complex Post Error]"}]
-
-        # 如果解析结果为空（比如只发了空行），给个默认值
-        if not msg_content:
-            return [{"type": "text", "text": "[Empty Post]"}]
-
-        return msg_content
+                            msg_content.append({"type": "text", "text": "[Image Failed]"})
+        except Exception:
+            return [{"type": "text", "text": "[Post Error]"}]
+        return msg_content if msg_content else [{"type": "text", "text": "[Empty Post]"}]
 
     async def reply(self, chat_id, response):
-        # 简单处理回复：提取文本内容发送
         clean_text = ""
         if isinstance(response, str):
             clean_text = response
         elif isinstance(response, list):
-            # 如果是列表，提取所有 text 块
-            texts = [b.get("text", "") for b in response if isinstance(b, dict) and b.get("type") == "text"]
-            clean_text = "\n".join(texts)
+            clean_text = "\n".join([b.get("text", "") for b in response if b.get("type") == "text"])
         elif hasattr(response, 'text'):
             clean_text = response.text
         else:
@@ -243,7 +224,14 @@ class LarkManager:
         req = CreateMessageRequest.builder().receive_id_type("chat_id") \
             .request_body(CreateMessageRequestBody.builder().receive_id(chat_id).msg_type("interactive")
                           .content(json.dumps(card)).build()).build()
-        await asyncio.to_thread(lambda: self.api_client.im.v1.message.create(req))
+
+        # 增加回复的错误捕获
+        try:
+            resp = await asyncio.to_thread(lambda: self.api_client.im.v1.message.create(req))
+            if not resp.success():
+                self.logger.error(f"❌ 回复失败: code={resp.code}, msg={resp.msg}")
+        except Exception as e:
+            self.logger.error(f"❌ 回复异常: {e}")
 
     def bind_handler(self, func):
         self.message_handler = func

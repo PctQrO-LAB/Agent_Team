@@ -32,9 +32,9 @@ class ScheduleAgent(ReActAgent):
     ScheduleAgent: 负责日程管理的智能体
     """
 
-    def __init__(self, name: str, toolkit: Toolkit, memory: Mem0LongTermMemory, sys_prompt: str = None):
+    def __init__(self, name: str, toolkit: Toolkit, memory: Mem0LongTermMemory, sys_prompt: str = None, api_key: str = None):
         # 加载模型配置 (DeepSeek)
-        config_args = load_model_config("deepseek_config")
+        config_args = load_model_config("deepseek_config", override_api_key=api_key)
         config_args.pop("config_name", None)
         model_instance = OpenAIChatModel(**config_args)
         use_prompt = sys_prompt if sys_prompt else SCHEDULE_SYSTEM_PROMPT
@@ -225,6 +225,7 @@ class ScheduleAgent(ReActAgent):
         app_secret = os.environ.get("SCHEDULER_APP_SECRET")
         user_id = os.environ.get("USER_OPEN_ID")
         feishu_name = os.environ.get("SCHEDULER_FEISHU_NAME")
+        specific_api_key = os.environ.get("SCHEDULER_API_KEY")
 
         if not app_id or not app_secret:
             print("⚠️ [Scheduler] 缺少环境变量配置，跳过初始化。")
@@ -256,9 +257,9 @@ class ScheduleAgent(ReActAgent):
         for t in tools_list:
             toolkit.register_tool_function(t)
 
-        dashscope_key = os.environ.get("DASHSCOPE_API_KEY")
+        dashscope_key = os.environ.get("EMBEDDING_API_KEY")
         embedding_model = DashScopeTextEmbedding(model_name="text-embedding-v2", api_key=dashscope_key)
-        llm_config = load_model_config("deepseek_config")
+        llm_config = load_model_config("deepseek_config", override_api_key=specific_api_key)
         llm_config.pop("config_name", None)
         mem0_llm = OpenAIChatModel(**llm_config)
 
@@ -282,7 +283,7 @@ class ScheduleAgent(ReActAgent):
             vector_store_config=vector_config_obj  # 👈 传入构造好的对象
         )
 
-        agent_instance = cls(name="Scheduler", sys_prompt=full_sys_prompt, toolkit=toolkit, memory=memory)
+        agent_instance = cls(name="Scheduler", sys_prompt=full_sys_prompt, toolkit=toolkit, memory=memory, api_key=specific_api_key)
         manager = LarkManager(app_id, app_secret, bot_name=feishu_name)
 
         return {"name": "Scheduler", "agent": agent_instance, "manager": manager}
