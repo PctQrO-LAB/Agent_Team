@@ -15,7 +15,15 @@ from src.core.lark_manager import LarkManager
 from src.tools.note_tools import AgentNotebook
 from src.tools.file_tools import FileTool
 
-from src.config.prompts import TEST_SYSTEM_PROMPT
+
+# 假设你已经创建了 GenerationTool，如果还没有，请确保创建该文件
+try:
+    from src.tools.generate_tools import GenerationTool
+except ImportError:
+    GenerationTool = None
+
+# ✨ 引用最新的视觉设计 Prompt
+from src.config.prompts import DESIGN_SYSTEM_PROMPT
 
 try:
     from mem0.configs.base import VectorStoreConfig
@@ -23,18 +31,22 @@ except ImportError:
     pass
 
 
-class StoryboardAgent(ReActAgent):
+class DesignAgent(ReActAgent):
     """
-    [电影分镜师]
-    职责：负责将场景和人物组装成具体镜头。调用场景和人物的素材，输出分镜画面。
+    [视觉设计总监] (Visual Design Director)
+    职责：统一负责角色 (Casting) 和美术 (Design) 的设计、委托生产与资产归档。
     """
 
-    def __init__(self, name: str, toolkit: Toolkit, memory: Mem0LongTermMemory, sys_prompt: str = "", api_key: str = None):
-        # 1. 加载模型 (Qwen3-VL)
+    def __init__(self, name: str, toolkit: Toolkit, memory: Mem0LongTermMemory, sys_prompt: str = "",
+                 api_key: str = None):
+        # 1. 加载模型 (保留 Qwen3-VL 或 DeepSeek，视配置而定)
+        # 设计类 Agent 建议使用具备强逻辑或多模态能力的模型
         config_args = load_model_config("qwen3-vl_config", override_api_key=api_key)
         config_args.pop("config_name", None)
         model_instance = DashScopeChatModel(**config_args)
-        sys_prompt = TEST_SYSTEM_PROMPT
+
+        # ✨ 使用统一的视觉设计 System Prompt
+        sys_prompt = DESIGN_SYSTEM_PROMPT
 
         super().__init__(
             name=name,
@@ -74,19 +86,23 @@ class StoryboardAgent(ReActAgent):
 
         if tool_name and self.manager and self.current_chat_id:
             try:
-                # 🎥 分镜专属 Emoji
-                text = f"🎥 **Storyboard Action**: `{tool_name}` ..."
+                # 🎨 设计专属 Emoji
+                text = f"🎨 **Design Action**: `{tool_name}` ..."
                 asyncio.create_task(self.manager.reply(self.current_chat_id, text))
             except Exception as e:
                 print(f"⚠️ Hook Error: {e}")
 
     async def start_service(self, manager: LarkManager):
-        print(f"🎥 [{self.name}] 服务启动...")
+        print(f"🎨 [{self.name}] 视觉设计服务启动...")
         self.manager = manager
 
         async def _chat_loop(text: str, sender_id: str, chat_id: str):
-            print(f"⚡ [{self.name}] 收到指令 | ChatID: {chat_id}")
+            print(f"⚡ [{self.name}] 收到设计指令 | ChatID: {chat_id}")
             self.current_chat_id = chat_id
+
+            # 可以在这里注入 Project 上下文，如果 manager 能传递的话
+            # content = f"[Context: Project=Default] {text}"
+
             msg = Msg(name="user", content=text, role="user")
             try:
                 response = await self(msg)
@@ -97,7 +113,7 @@ class StoryboardAgent(ReActAgent):
             finally:
                 self.current_chat_id = None
 
-            if any(k in text for k in ["退下", "结束", "再见"]):
+            if any(k in text for k in ["没事了", "结束", "再见"]):
                 self.memory.clear()
                 await manager.reply(chat_id, "✅ 短期记忆已清理。")
 
@@ -106,40 +122,50 @@ class StoryboardAgent(ReActAgent):
 
     @classmethod
     def build_from_env(cls) -> Optional[Dict]:
-        app_id = os.environ.get("STORYBOARD_APP_ID")
-        app_secret = os.environ.get("STORYBOARD_APP_SECRET")
-        bot_name = os.environ.get("STORYBOARD_FEISHU_NAME", "Storyboard Bot")
-        specific_api_key = os.environ.get("STORYBOARD_API_KEY")
+        # ✨ 环境变量前缀变更为 DESIGN_
+        app_id = os.environ.get("DESIGN_APP_ID")
+        app_secret = os.environ.get("DESIGN_APP_SECRET")
+        bot_name = os.environ.get("DESIGN_FEISHU_NAME", "Design Bot")
+        specific_api_key = os.environ.get("DESIGN_API_KEY")
 
         if not app_id or not app_secret:
-            print("⚠️ [StoryboardAgent] 缺少环境变量，跳过。")
+            print("⚠️ [VisualDesignAgent] 缺少环境变量 (DESIGN_APP_ID/SECRET)，跳过。")
             return None
 
-        print("🎥 [StoryboardAgent] 正在组装...")
+        print("🎨 [VisualDesignAgent] 正在组装...")
 
-        note_tool = AgentNotebook(agent_name="StoryboardAgent")
+        # 初始化工具实例
+        note_tool = AgentNotebook(agent_name="DesignAgent")
         fs_tool = FileTool()
+        gen_tool = GenerationTool() if GenerationTool else None
 
         toolkit = Toolkit()
+
+        # ✨ 注册关键工具：统一的 Design 结构与生成工具
         tools_list = [
-            fs_tool.init_shot_structure,  # 建分镜目录
-
-            # 核心：存镜头
-            note_tool.save_shot,
-            note_tool.get_shot,
-
-            # 核心：读素材 (只读不写)
-            note_tool.get_scene,  # 读环境
-            note_tool.get_design_asset,  # 读人设 (会自动触发OSS桥接)
-
-            # 杂项
-            fs_tool.save_image_file,
-            note_tool.save_memento,
+            # 1. 筑巢 (Init)
+            fs_tool.init_design_structure,
+            # 2. 归档 (Prompt File)
+            fs_tool.save_prompt_file,
+            # 3. 登记/回填 (Register/Backfill)
+            note_tool.save_design_asset,
+            # 4. 查阅 (Query)
+            note_tool.get_design_asset,
             note_tool.get_prompt_template,
-            note_tool.get_dashboard
+            note_tool.save_memento,
+            # 视觉感知 (用于看参考图)
+            fs_tool.read_image_as_url,
         ]
+
+        # ✨ 5. 委托生成 (Delegate) - 只注册一次
+        if gen_tool:
+            tools_list.append(gen_tool.generate_image)
+        else:
+            print("⚠️ Warning: GenerationTool not found. Agent cannot delegate image generation.")
+
         for t in tools_list: toolkit.register_tool_function(t)
 
+        # Embedding & LLM Setup
         dashscope_key = os.environ.get("EMBEDDING_API_KEY")
         embedding_model = DashScopeTextEmbedding(model_name="text-embedding-v2", api_key=dashscope_key)
 
@@ -147,21 +173,21 @@ class StoryboardAgent(ReActAgent):
         llm_config.pop("config_name", None)
         mem0_llm = DashScopeChatModel(**llm_config)
 
-        # 独立的 Memory 路径
-        db_path = "/app/data/mem0_storyboard_db"
+        # ✨ 独立的 Memory 路径
+        db_path = "/app/data/mem0_design_db"
         if not os.path.exists(db_path): os.makedirs(db_path, exist_ok=True)
 
         vector_config = VectorStoreConfig(provider="qdrant", config={"path": db_path})
 
         memory = Mem0LongTermMemory(
-            agent_name="StoryboardAgent",
+            agent_name="DesignAgent",
             user_name="User",
             model=mem0_llm,
             embedding_model=embedding_model,
             vector_store_config=vector_config
         )
 
-        agent = cls(name="StoryboardAgent", toolkit=toolkit, memory=memory, api_key=specific_api_key)
+        agent = cls(name="DesignAgent", toolkit=toolkit, memory=memory, api_key=specific_api_key)
         manager = LarkManager(app_id, app_secret, bot_name=bot_name)
 
-        return {"name": "StoryboardAgent", "agent": agent, "manager": manager}
+        return {"name": "DesignAgent", "agent": agent, "manager": manager}

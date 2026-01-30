@@ -126,21 +126,25 @@ class AgentNotebook:
         cursor.execute('''
                        CREATE TABLE IF NOT EXISTS production_assets
                        (
-                           id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                           project        TEXT NOT NULL,                   -- 项目名 (如: WanderingEarth3)
-                           scene          TEXT NOT NULL,                   -- 场 (如: Scene_01)
-                           shot           TEXT NOT NULL,                   -- 镜 (如: Shot_05)
-                           version        INTEGER   DEFAULT 1,             -- 版本号
+                           id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                           project         TEXT,
+                           scene           TEXT,
+                           shot            TEXT,
+                           version         INTEGER,
+                           prompt_path     TEXT, -- 存储 prompt.json 的路径
+                           image_path      TEXT, -- 存储 render.jpg 的路径
+                           status          TEXT, -- planning, generating, done, audited, rejected
+                           audit_feedback  TEXT,
 
-                           prompt_path    TEXT,                            -- 提示词文件的绝对路径
-                           image_path     TEXT,                            -- 图片文件的绝对路径 (生成后回填)
+                           -- 🎥 影视工业字段
+                           shot_size       TEXT, -- 景别 (Wide, Medium, Close-up...)
+                           camera_angle    TEXT, -- 角度 (Eye-level, High angle...)
+                           camera_movement TEXT, -- 运镜 (Static, Pan, Dolly...)
+                           lighting        TEXT, -- 光照 (Natural, Rim light...)
 
-                           status         TEXT      DEFAULT 'pending_gen', -- 状态机: pending_gen -> generated -> audited
-                           audit_feedback TEXT,                            -- 审核意见
-
-                           created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                           updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                       )
+                           updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                           UNIQUE (project, scene, shot, version)
+                       );
                        ''')
 
         # === 8. 提示词模版表 (prompt_templates) ===
@@ -160,45 +164,41 @@ class AgentNotebook:
         cursor.execute('''
                        CREATE TABLE IF NOT EXISTS scenes
                        (
-                           id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                           project      TEXT NOT NULL,
-                           scene        TEXT NOT NULL,
-
-                           -- 核心设定
-                           world_prompt TEXT,                      -- 环境/世界观 Prompt
-                           concept_url  TEXT,                      -- 概念图 URL
-                           elements     TEXT,                      -- [新增] 关键元素 (如: 霓虹灯, 雨水, 垃圾桶)
-                           characters   TEXT,                      -- [新增] 在场角色 (如: 主角, 卖面的老头)
-
-                           status       TEXT      DEFAULT 'draft', -- draft -> confirmed
-                           updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-                           -- 联合唯一索引：确保一个项目的一个场只有一条记录
+                           id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                           project       TEXT,
+                           scene         TEXT,
+                           world_prompt  TEXT,
+                           elements      TEXT,
+                           mood          TEXT,
+                           color_tone    TEXT, -- 新增: 画面色调 (如: Cyberpunk Neon)
+                           lighting_mood TEXT, -- 新增: 光影氛围 (如: Low Key Noir)
+                           created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                            UNIQUE (project, scene)
-                       )
+                       );
                        ''')
 
-        # === 10. 角色设定表 (scenes) ===
-        # 记录每个“角色”的设定
+        # === 10. 视觉资产表 ===
+        # 记录每个设计图
         cursor.execute('''
-                       CREATE TABLE IF NOT EXISTS characters
+                       CREATE TABLE IF NOT EXISTS design_assets
                        (
-                           id                INTEGER PRIMARY KEY AUTOINCREMENT,
-                           project           TEXT NOT NULL,
-                           name              TEXT NOT NULL,
+                           id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                           project       TEXT NOT NULL,
+                           name          TEXT NOT NULL, -- 资产名称 (snake_case)
+                           category      TEXT NOT NULL, -- 类别: character, prop, vehicle, environment, costume
 
-                           -- 核心设定
-                           appearance_prompt TEXT, -- 外貌 Prompt (Lock)
-                           local_path        TEXT, -- 📍 [核心] 本地人设图路径
+                           prompt_path   TEXT,          -- Prompt 文件路径
+                           image_path    TEXT,          -- 图片路径
 
-                           features          TEXT, -- 特征标签
-                           status            TEXT      DEFAULT 'draft',
-                           updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                           attributes    TEXT,          -- JSON字段，存储特有属性 (如角色的 personality, 道具的 material)
+                           oss_url_cache TEXT,          -- 视觉缓存
 
-                           UNIQUE (project, name)
-                       )
+                           status        TEXT,          -- planning, done, audited
+                           remarks       TEXT,          -- 备注
+                           created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                           UNIQUE (project, name, category)
+                       );
                        ''')
-
         self.conn.commit()
 
     def _execute_with_retry(self, sql: str, params: tuple = (), max_retries=5):
@@ -344,86 +344,89 @@ class AgentNotebook:
     # 🎬 场景管理工具 (Scene Manager) - 对应 ConceptAgent
     # 命名规范: save_scene / get_scene / del_scene
     # =================================================
-    
-    def save_scene(self, project: str, scene: str, world_prompt: str = None,
-                   elements: str = None, characters: str = None,
-                   concept_url: str = None, status: str = None) -> ToolResponse:
-        """
-        [存/改] 保存或更新场景(Scene)的设定信息。
 
-        功能：
-        1. 如果场景不存在，创建新记录。
-        2. 如果场景已存在，只更新你传入的非空字段 (Upsert 逻辑)。
+    def save_scene(self, project: str, scene: str,
+                   world_prompt: str = None,
+                   elements: str = None,
+                   mood: str = None,
+                   color_tone: str = None,
+                   lighting_mood: str = None) -> ToolResponse:
+        """
+        [存/改] 登记或更新场景的视觉设定。
 
         Args:
-            project: 项目名。
-            scene: 场次名 (如 'Scene_01')。
-            world_prompt: (可选) 环境描述 Prompt。
-            elements: (可选) 场景内的关键物品/元素。
-            characters: (可选) 场景内涉及的角色。
-            concept_url: (可选) 概念图 URL。
-            status: (可选) 状态 (draft/confirmed)。
+            project (str): 项目名称 (如 'MyMovie').
+            scene (str): 场次编号 (如 'Scene_01').
+            world_prompt (str): 世界观描述 (宏观设定).
+            elements (str): 场景内的关键物体/元素列表.
+            mood (str): 整体情绪/氛围.
+            color_tone (str): [关键] 画面色调 (e.g., 'Cyberpunk Neon', 'Desaturated Sepia').
+            lighting_mood (str): [关键] 光影基调 (e.g., 'High Key', 'Film Noir', 'Natural').
+
+        Returns:
+            ToolResponse: 操作结果消息.
         """
         try:
-            # 1. 检查是否存在
             cursor = self.conn.cursor()
-            cursor.execute("SELECT id FROM scenes WHERE project=? AND scene=?", (project, scene))
+            cursor.execute('SELECT id FROM scenes WHERE project=? AND scene=?', (project, scene))
             row = cursor.fetchone()
 
             if row:
-                # === 更新逻辑 (Update) ===
-                scene_id = row[0]
-                update_fields = []
+                # 更新逻辑
+                fields = []
                 params = []
+                if world_prompt: fields.append("world_prompt=?"); params.append(world_prompt)
+                if elements: fields.append("elements=?"); params.append(elements)
+                if mood: fields.append("mood=?"); params.append(mood)
+                if color_tone: fields.append("color_tone=?"); params.append(color_tone)
+                if lighting_mood: fields.append("lighting_mood=?"); params.append(lighting_mood)
 
-                # 动态构建 SQL，只更新传入的字段
-                if world_prompt is not None: update_fields.append("world_prompt=?"); params.append(world_prompt)
-                if elements is not None:     update_fields.append("elements=?");     params.append(elements)
-                if characters is not None:   update_fields.append("characters=?");   params.append(characters)
-                if concept_url is not None:  update_fields.append("concept_url=?");  params.append(concept_url)
-                if status is not None:       update_fields.append("status=?");       params.append(status)
+                if not fields:
+                    return ToolResponse(content=[TextBlock(type="text", text="⚠️ 场景表未发生变更 (未传入有效字段)")])
 
-                if not update_fields:
-                    return ToolResponse(content=[TextBlock(type="text", text="⚠️ 未传入任何需要更新的字段。")])
-
-                update_fields.append("updated_at=CURRENT_TIMESTAMP")
-                sql = f"UPDATE scenes SET {', '.join(update_fields)} WHERE id=?"
-                params.append(scene_id)
+                sql = f"UPDATE scenes SET {', '.join(fields)} WHERE id=?"
+                params.append(row[0])
                 self._execute_with_retry(sql, tuple(params))
-                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 场景 '{scene}' 更新成功。")])
-
+                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 场景已更新: {scene}")])
             else:
-                # === 创建逻辑 (Insert) ===
-                sql = '''
-                      INSERT INTO scenes (project, scene, world_prompt, elements, characters, concept_url, status)
-                      VALUES (?, ?, ?, ?, ?, ?, ?) \
-                      '''
-                # 对于新建，没传的字段就是 None (NULL)
-                params = (project, scene, world_prompt, elements, characters, concept_url, status or 'draft')
-                self._execute_with_retry(sql, params)
-                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 新场景 '{scene}' 创建成功。")])
-
+                # 创建逻辑
+                sql = '''INSERT INTO scenes (project, scene, world_prompt, elements, mood, color_tone, lighting_mood)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)'''
+                self._execute_with_retry(sql, (project, scene, world_prompt, elements, mood, color_tone, lighting_mood))
+                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 新场景已创建: {scene}")])
         except Exception as e:
-            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 保存场景失败: {e}")])
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ Error: {e}")])
 
     def get_scene(self, project: str, scene: str) -> ToolResponse:
         """
-        [查] 获取场景的详细设定 (供 StoryboardAgent 读取参考)。
-        返回 JSON 格式的场景信息，包括 world_prompt, elements, concept_url 等。
+        [查] 获取场景详情。
+
+        Args:
+            project (str): 项目名称.
+            scene (str): 场次编号.
+
+        Returns:
+            ToolResponse: 包含场景所有视觉参数的文本块.
         """
         try:
             cursor = self.conn.cursor()
-            cursor.execute("SELECT * FROM scenes WHERE project=? AND scene=?", (project, scene))
+            cursor.execute('SELECT * FROM scenes WHERE project=? AND scene=?', (project, scene))
             row = cursor.fetchone()
-
             if row:
                 data = dict(row)
-                return ToolResponse(
-                    content=[TextBlock(type="text", text=json.dumps(data, indent=2, ensure_ascii=False))])
+                info = (
+                    f"🎬 [Scene: {data['scene']}]\n"
+                    f"🌍 World: {data['world_prompt'] or 'N/A'}\n"
+                    f"🧩 Elements: {data['elements'] or 'N/A'}\n"
+                    f"🎨 Mood: {data['mood'] or 'N/A'}\n"
+                    f"🌈 Color Tone: {data['color_tone'] or 'Not defined'}\n"
+                    f"💡 Lighting Mood: {data['lighting_mood'] or 'Not defined'}"
+                )
+                return ToolResponse(content=[TextBlock(type="text", text=info)])
             else:
                 return ToolResponse(content=[TextBlock(type="text", text=f"📭 未找到场景 '{scene}' 的设定信息。")])
         except Exception as e:
-            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 查询场景失败: {e}")])
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ Error: {e}")])
 
     def del_scene(self, project: str, scene: str) -> ToolResponse:
         """[删] 删除某个场景的全部设定。"""
@@ -442,90 +445,134 @@ class AgentNotebook:
     # 命名规范: save_shot / get_shot / del_shot
     # =================================================
     def save_shot(self, project: str, scene: str, shot: str, version: int = 1,
-                  prompt_path: str = None, image_path: str = None,
-                  status: str = None, audit_feedback: str = None) -> ToolResponse:
+                  prompt_file_path: str = None,
+                  image_path: str = None,
+                  status: str = None,
+                  remarks: str = None,
+                  shot_size: str = None,
+                  camera_angle: str = None,
+                  camera_movement: str = None,
+                  lighting: str = None) -> ToolResponse:
         """
-        [存/改] 注册或更新镜头(Shot)资产。
-        替代原有的 register_asset 工具。
+        [分镜表登记/更新] 记录镜头的 Prompt 文件位置、图片路径以及详细的镜头语言参数。
+
+        Args:
+            project (str): 项目名称.
+            scene (str): 场次编号.
+            shot (str): 镜头编号 (如 'Shot_05').
+            version (int): 版本号 (默认 1).
+            prompt_file_path (str): [规划阶段] Prompt JSON 文件的本地路径.
+            image_path (str): [完成阶段] Bot 下载的图片本地路径.
+            status (str): 状态流转 ('planning' -> 'generating' -> 'done' -> 'audited'/'rejected').
+            remarks (str): 监制反馈或备注.
+            shot_size (str): 景别 (e.g., 'Extreme Wide Shot', 'Medium Shot', 'Close-up').
+            camera_angle (str): 拍摄角度 (e.g., 'Eye-level', 'Low angle', 'Bird\'s eye').
+            camera_movement (str): 运镜方式 (e.g., 'Static', 'Pan Left', 'Dolly In').
+            lighting (str): 光照设定 (e.g., 'Natural Soft', 'Rim Light', 'Hard Shadow').
+
+        Returns:
+            ToolResponse: 操作结果.
         """
         try:
-            # 这里的逻辑比较特殊：production_assets 表没有唯一约束(因为可能有多个version)
-            # 所以我们需要明确：这是"注册新版本"还是"更新旧版本"？
-            # 为了简化 Agent 逻辑，我们约定：如果传入 prompt_path，视为注册新镜头/新版本；
-            # 如果只传入 status/feedback，视为更新最近的一个版本。
-
             cursor = self.conn.cursor()
+            cursor.execute('''
+                           SELECT id
+                           FROM production_assets
+                           WHERE project = ?
+                             AND scene = ?
+                             AND shot = ?
+                             AND version = ?
+                           ''', (project, scene, shot, version))
+            row = cursor.fetchone()
 
-            if prompt_path:
-                # === 插入新记录 (Register) ===
-                sql = '''
-                      INSERT INTO production_assets (project, scene, shot, version, prompt_path, status)
-                      VALUES (?, ?, ?, ?, ?, ?)
-                      '''
-                # 默认状态
-                current_status = status or 'pending_gen'
-                self._execute_with_retry(sql, (project, scene, shot, version, prompt_path, current_status))
-                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 镜头 {shot} (v{version}) 已注册。")])
+            if row:
+                # === 更新现有记录 (Backfill/Update) ===
+                shot_id = row[0]
+                fields = []
+                params = []
+
+                if prompt_file_path: fields.append("prompt_path=?"); params.append(prompt_file_path)
+                if image_path: fields.append("image_path=?"); params.append(image_path)
+                if status: fields.append("status=?"); params.append(status)
+                if remarks: fields.append("audit_feedback=?"); params.append(remarks)
+
+                # 更新镜头语言
+                if shot_size: fields.append("shot_size=?"); params.append(shot_size)
+                if camera_angle: fields.append("camera_angle=?"); params.append(camera_angle)
+                if camera_movement: fields.append("camera_movement=?"); params.append(camera_movement)
+                if lighting: fields.append("lighting=?"); params.append(lighting)
+
+                if not fields:
+                    return ToolResponse(content=[TextBlock(type="text", text="⚠️ 无字段变更。")])
+
+                fields.append("updated_at=CURRENT_TIMESTAMP")
+                sql = f"UPDATE production_assets SET {', '.join(fields)} WHERE id=?"
+                params.append(shot_id)
+                self._execute_with_retry(sql, tuple(params))
+                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 分镜表已更新: {shot} v{version}")])
 
             else:
-                # === 更新最近记录 (Update) ===
-                # 找到该镜头最新的一个 id
-                cursor.execute('''
-                               SELECT id
-                               FROM production_assets
-                               WHERE project = ?
-                                 AND scene = ?
-                                 AND shot = ?
-                               ORDER BY version DESC
-                               LIMIT 1
-                               ''', (project, scene, shot))
-                row = cursor.fetchone()
-
-                if row:
-                    shot_id = row[0]
-                    update_fields = []
-                    params = []
-
-                    if image_path:    update_fields.append("image_path=?");    params.append(image_path)
-                    if status:        update_fields.append("status=?");        params.append(status)
-                    if audit_feedback: update_fields.append("audit_feedback=?"); params.append(audit_feedback)
-
-                    if not update_fields:
-                        return ToolResponse(content=[TextBlock(type="text", text="⚠️ 未传入更新字段。")])
-
-                    sql = f"UPDATE production_assets SET {', '.join(update_fields)}, updated_at=CURRENT_TIMESTAMP WHERE id=?"
-                    params.append(shot_id)
-                    self._execute_with_retry(sql, tuple(params))
-                    return ToolResponse(content=[TextBlock(type="text", text=f"✅ 镜头 {shot} 状态已更新。")])
-                else:
-                    return ToolResponse(content=[TextBlock(type="text", text=f"❌ 找不到镜头 {shot} 的记录，无法更新。")])
+                # === 创建新记录 (Register/Plan) ===
+                sql = '''
+                      INSERT INTO production_assets (project, scene, shot, version, prompt_path, image_path, status, \
+                                                     audit_feedback, \
+                                                     shot_size, camera_angle, camera_movement, lighting) \
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      '''
+                final_status = status or 'planning'
+                params = (
+                    project, scene, shot, version, prompt_file_path, image_path, final_status, remarks,
+                    shot_size, camera_angle, camera_movement, lighting
+                )
+                self._execute_with_retry(sql, params)
+                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 分镜条目已规划: {shot} v{version}")])
 
         except Exception as e:
-            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 保存镜头失败: {e}")])
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ Error: {e}")])
 
     def get_shot(self, project: str, scene: str, shot: str, version: int = None) -> ToolResponse:
         """
-        [查] 查询镜头信息。如果不传 version，返回所有版本列表。
+        [查] 获取分镜详情。如果不指定版本，默认返回最新的一个版本。
+
+        Args:
+            project (str): 项目名称.
+            scene (str): 场次编号.
+            shot (str): 镜头编号.
+            version (int, optional): 指定版本号.
+
+        Returns:
+            ToolResponse: 包含路径、状态和镜头参数的 JSON 格式数据.
         """
         try:
             cursor = self.conn.cursor()
             if version:
-                cursor.execute("SELECT * FROM production_assets WHERE project=? AND scene=? AND shot=? AND version=?",
-                               (project, scene, shot, version))
+                sql = "SELECT * FROM production_assets WHERE project=? AND scene=? AND shot=? AND version=?"
+                params = (project, scene, shot, version)
             else:
-                cursor.execute(
-                    "SELECT * FROM production_assets WHERE project=? AND scene=? AND shot=? ORDER BY version DESC",
-                    (project, scene, shot))
+                sql = "SELECT * FROM production_assets WHERE project=? AND scene=? AND shot=? ORDER BY version DESC LIMIT 1"
+                params = (project, scene, shot)
 
-            rows = cursor.fetchall()
-            if rows:
-                data = [dict(r) for r in rows]
+            rows = cursor.execute(sql, params).fetchall()
+
+            result_data = []
+            for row in rows:
+                item = dict(row)
+                # 将镜头参数聚合，方便阅读
+                item['cinematography'] = {
+                    "size": item.get('shot_size') or "N/A",
+                    "angle": item.get('camera_angle') or "N/A",
+                    "movement": item.get('camera_movement') or "N/A",
+                    "lighting": item.get('lighting') or "N/A"
+                }
+                result_data.append(item)
+
+            if result_data:
                 return ToolResponse(
-                    content=[TextBlock(type="text", text=json.dumps(data, indent=2, ensure_ascii=False))])
+                    content=[TextBlock(type="text", text=json.dumps(result_data, indent=2, ensure_ascii=False))])
             else:
-                return ToolResponse(content=[TextBlock(type="text", text="📭 未找到镜头记录。")])
+                return ToolResponse(content=[TextBlock(type="text", text="📭 未找到该镜头记录。")])
         except Exception as e:
-            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 查询镜头失败: {e}")])
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ Error: {e}")])
 
     def del_shot(self, project: str, scene: str, shot: str, version: int = None) -> ToolResponse:
         """[删] 删除镜头记录。如果不传 version，删除该镜头所有版本！"""
@@ -543,134 +590,64 @@ class AgentNotebook:
             return ToolResponse(content=[TextBlock(type="text", text=f"❌ 删除镜头失败: {e}")])
 
     # =================================================
-    # 💃 Character Tools (角色管理 - 本地优先版)
+    # 💃 Design Tools (角色管理 - 本地优先版)
     # =================================================
 
-    def save_character(self, project: str, name: str, appearance_prompt: str = None,
-                       local_path: str = None, features: str = None, status: str = None) -> ToolResponse:
+    def save_design_asset(self, project: str, category: str, name: str,
+                          prompt_file_path: str = None,
+                          image_path: str = None,
+                          attributes: str = None,  # 存性格、材质等
+                          status: str = None,
+                          remarks: str = None) -> ToolResponse:
         """
-        [存/改] 保存角色设定。
-
-        注意：Agent 应先使用 FileTool 将图片保存到本地，拿到 local_path 后，
-        再调用此工具将路径存入数据库。
+        [通用登记] 保存视觉资产 (角色、道具、场景图等)。
         """
         try:
             cursor = self.conn.cursor()
-            cursor.execute("SELECT id FROM characters WHERE project=? AND name=?", (project, name))
+            cursor.execute('SELECT id FROM design_assets WHERE project=? AND category=? AND name=?',
+                           (project, category, name))
             row = cursor.fetchone()
 
             if row:
-                # === 更新模式 ===
-                char_id = row[0]
-                update_fields = []
+                fields = []
                 params = []
+                if prompt_file_path: fields.append("prompt_path=?"); params.append(prompt_file_path)
+                if image_path: fields.append("image_path=?"); params.append(image_path)
+                if attributes: fields.append("attributes=?"); params.append(attributes)
+                if status: fields.append("status=?"); params.append(status)
+                if remarks: fields.append("remarks=?"); params.append(remarks)
 
-                if appearance_prompt: update_fields.append("appearance_prompt=?"); params.append(appearance_prompt)
-                if features:          update_fields.append("features=?");          params.append(features)
-                if status:            update_fields.append("status=?");            params.append(status)
+                if not fields: return ToolResponse(content=[TextBlock(type="text", text="⚠️ 无变更。")])
 
-                # 🔥 关键逻辑：如果更新了本地文件路径，必须作废旧的 OSS 缓存
-                if local_path:
-                    update_fields.append("local_path=?")
-                    params.append(local_path)
-                    update_fields.append("oss_url_cache=NULL")  # <--- 强制清空缓存
-
-                if not update_fields:
-                    return ToolResponse(content=[TextBlock(type="text", text="⚠️ 无变更。")])
-
-                update_fields.append("updated_at=CURRENT_TIMESTAMP")
-
-                sql = f"UPDATE characters SET {', '.join(update_fields)} WHERE id=?"
-                params.append(char_id)
+                sql = f"UPDATE design_assets SET {', '.join(fields)} WHERE id=?"
+                params.append(row[0])
                 self._execute_with_retry(sql, tuple(params))
-
-                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 角色 '{name}' 更新成功 (缓存已重置)")])
-
+                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 资产已更新: {name} ({category})")])
             else:
-                # === 新建模式 ===
-                sql = '''
-                      INSERT INTO characters (project, name, appearance_prompt, local_path, features, status)
-                      VALUES (?, ?, ?, ?, ?, ?) \
-                      '''
-                self._execute_with_retry(sql,
-                                         (project, name, appearance_prompt, local_path, features, status or 'draft'))
-                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 新角色 '{name}' 创建成功")])
-
+                sql = '''INSERT INTO design_assets (project, category, name, prompt_path, image_path, attributes, \
+                                                    status, remarks)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)'''
+                final_status = status or 'planning'
+                self._execute_with_retry(sql, (project, category, name, prompt_file_path, image_path, attributes,
+                                               final_status, remarks))
+                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 新资产已登记: {name} ({category})")])
         except Exception as e:
-            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 角色保存失败: {e}")])
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ Error: {e}")])
 
-    def get_character(self, project: str, name: str) -> ToolResponse:
-        """
-        [查] 获取角色详情。
-
-        🔥 自动桥接机制：
-        Agent 调用此工具时，系统会自动检查 'oss_url_cache'。
-        如果缓存为空但有 'local_path'，系统会调用 FileManager 自动上传 OSS，
-        并将生成的 URL 更新回数据库，最后返回给 Agent。
-        """
+    def get_design_asset(self, project: str, category: str, name: str) -> ToolResponse:
+        """[查] 获取资产详情"""
         try:
             cursor = self.conn.cursor()
-            cursor.execute("SELECT * FROM characters WHERE project=? AND name=?", (project, name))
+            cursor.execute('SELECT * FROM design_assets WHERE project=? AND category=? AND name=?',
+                           (project, category, name))
             row = cursor.fetchone()
-
             if row:
-                data = dict(row)
-                char_id = data['id']
-                local_path = data.get('local_path')
-                cached_url = data.get('oss_url_cache')
-
-                # === 桥接逻辑 Start ===
-                final_url = cached_url
-
-                # 如果没缓存，或者缓存看起来失效了，且本地有文件
-                # (这里简单判断 cached_url 是否为空，你也可以加过期时间判断)
-                if not final_url and local_path:
-                    # 1. 呼叫管家：把这个本地文件变现成 URL
-                    new_url = self.file_manager.get_file_url(local_path)
-
-                    if new_url:
-                        # 2. 回写数据库 (建立缓存)
-                        try:
-                            self._execute_with_retry(
-                                "UPDATE characters SET oss_url_cache=? WHERE id=?",
-                                (new_url, char_id)
-                            )
-                            final_url = new_url
-                        except Exception as db_e:
-                            print(f"⚠️ URL 缓存更新失败: {db_e}")
-                            final_url = new_url  # 即使存库失败，也要先把 URL 给 Agent 用
-
-                # === 桥接逻辑 End ===
-
-                # 构造返回给 Agent 的数据 (Agent 只关心 ref_image_url)
-                response_data = {
-                    "project": data['project'],
-                    "name": data['name'],
-                    "appearance_prompt": data['appearance_prompt'],
-                    "features": data['features'],
-                    "status": data['status'],
-                    "ref_image_url": final_url or "(无参考图)"  # Agent 看到的是这就字段
-                }
-
                 return ToolResponse(
-                    content=[TextBlock(type="text", text=json.dumps(response_data, indent=2, ensure_ascii=False))])
+                    content=[TextBlock(type="text", text=json.dumps(dict(row), indent=2, ensure_ascii=False))])
             else:
-                return ToolResponse(content=[TextBlock(type="text", text=f"📭 未找到角色 '{name}'")])
-
+                return ToolResponse(content=[TextBlock(type="text", text=f"📭 未找到 {category}: '{name}'")])
         except Exception as e:
-            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 查询角色失败: {e}")])
-
-    def del_character(self, project: str, name: str) -> ToolResponse:
-        """[删] 删除角色设定。"""
-        try:
-            sql = "DELETE FROM characters WHERE project=? AND name=?"
-            cursor = self._execute_with_retry(sql, (project, name))
-            if cursor.rowcount > 0:
-                return ToolResponse(content=[TextBlock(type="text", text=f"🗑️ 角色 '{name}' 已删除")])
-            else:
-                return ToolResponse(content=[TextBlock(type="text", text=f"⚠️ 未找到角色，删除无效")])
-        except Exception as e:
-            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 删除失败: {e}")])
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ Error: {e}")])
 
     # =================================================
     # 🛠️ 系统配置工具 (System & Config) - 模版与通用

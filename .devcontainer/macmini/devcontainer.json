@@ -1,0 +1,21 @@
+{
+  "name": "OrbStake Environment",
+  "image": "python:3.11-slim",
+  "runArgs": ["--platform=linux/arm64", "--net=host"],
+
+  // 使用 host networking，容器内 localhost 直接映射到 macOS localhost
+  // 无需显式端口转发配置
+  "mounts": [
+    "source=/Users/roomserver/Documents/AIGC,target=/app/production,type=bind"
+  ],
+
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+  "postCreateCommand": "pip install --upgrade pip",
+  "customizations": {
+    "jetbrains": {
+      "backend": "PyCharm"
+    }
+  }
+}

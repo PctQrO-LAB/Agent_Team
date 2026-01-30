@@ -33,13 +33,28 @@ class FileTool:
         except Exception as e:
             return ToolResponse(content=[TextBlock(type="text", text=f"❌ Error: {e}")])
 
-    def init_character_structure(self, project: str, name: str) -> ToolResponse:
-        """[初始化] 创建角色目录"""
+    def init_design_structure(self, project: str, category: str, name: str) -> ToolResponse:
+        """
+        [统一初始化] 创建视觉资产目录。
+        路径逻辑: /app/production/{project}/_Design/{category}/{name}
+
+        Args:
+            project: 项目名
+            category: 类别 (character, prop, vehicle, environment)
+            name: 资产名 (snake_case)
+        """
+        # 强制小写
+        cat_folder = category.lower()
+        name_folder = name.lower()
+
+        # 你的 FileManager 底层逻辑
+        # 结果示例: /app/production/MyFilm/_Design/character/neo
         try:
-            path = self.manager.init_character(project, name)
-            return ToolResponse(content=[TextBlock(type="text", text=f"✅ 角色场地已就绪: {path}")])
+            relative_path = f"{project}/_Design/{cat_folder}/{name_folder}"
+            full_path = self.manager.init_directory(relative_path)
+            return ToolResponse(content=[TextBlock(type="text", text=full_path)])
         except Exception as e:
-            return ToolResponse(content=[TextBlock(type="text", text=f"❌ Error: {e}")])
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ Init failed: {e}")])
 
     def init_shot_structure(self, project: str, scene: str, shot: str, version: int) -> ToolResponse:
         """[初始化] 创建镜头版本目录"""

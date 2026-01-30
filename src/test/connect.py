@@ -11,8 +11,8 @@ load_dotenv(os.path.join(root_dir, ".env"))
 
 
 def run_keeper(bot_type):
-    APP_ID = os.getenv("STORYBOARD_APP_ID")
-    APP_SECRET = os.getenv("STORYBOARD_APP_SECRET")
+    APP_ID = os.getenv("PRODUCE_APP_ID")
+    APP_SECRET = os.getenv("PRODUCE_APP_SECRET")
 
     print(f"🔌 正在连接飞书 (AppID: {APP_ID})...")
     print("⚠️  连接成功后，请立即去飞书后台点击【保存】！")

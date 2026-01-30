@@ -2,6 +2,7 @@ import asyncio
 import os
 from typing import Optional, Dict
 
+# AgentScope
 from agentscope.agent import ReActAgent
 from agentscope.tool import Toolkit
 from agentscope.model import DashScopeChatModel
@@ -10,10 +11,12 @@ from agentscope.embedding import DashScopeTextEmbedding
 from agentscope.formatter import DashScopeChatFormatter
 from agentscope.message import Msg
 
+# Core & Tools
 from src.core.load_model import load_model_config
 from src.core.lark_manager import LarkManager
 from src.tools.note_tools import AgentNotebook
 from src.tools.file_tools import FileTool
+from src.tools.lark_message_tools import LarkMessageTool
 
 from src.config.prompts import TEST_SYSTEM_PROMPT
 
@@ -23,10 +26,10 @@ except ImportError:
     pass
 
 
-class StoryboardAgent(ReActAgent):
+class ProduceAgent(ReActAgent):
     """
-    [电影分镜师]
-    职责：负责将场景和人物组装成具体镜头。调用场景和人物的素材，输出分镜画面。
+    [监制]
+    职责：负责审核生成内容是否符合要求。
     """
 
     def __init__(self, name: str, toolkit: Toolkit, memory: Mem0LongTermMemory, sys_prompt: str = "", api_key: str = None):
@@ -51,6 +54,7 @@ class StoryboardAgent(ReActAgent):
         self.manager: Optional[LarkManager] = None
         self.current_chat_id: Optional[str] = None
 
+        # 注册 Hook：通知飞书
         self.register_instance_hook(
             hook_type="pre_acting",
             hook_name="notify_lark",
@@ -58,6 +62,8 @@ class StoryboardAgent(ReActAgent):
         )
 
     def _hook_notify_tool_execution(self, agent_instance, msg, *args):
+        """[Hook] 推送工具调用状态"""
+
         def safe_get(data, key):
             if isinstance(data, dict): return data.get(key)
             return getattr(data, key, None)
@@ -74,14 +80,15 @@ class StoryboardAgent(ReActAgent):
 
         if tool_name and self.manager and self.current_chat_id:
             try:
-                # 🎥 分镜专属 Emoji
-                text = f"🎥 **Storyboard Action**: `{tool_name}` ..."
+                # 🔍️ 场景专属 Emoji
+                text = f"🔍️️ **Producer Action**: `{tool_name}` ..."
                 asyncio.create_task(self.manager.reply(self.current_chat_id, text))
             except Exception as e:
                 print(f"⚠️ Hook Error: {e}")
 
     async def start_service(self, manager: LarkManager):
-        print(f"🎥 [{self.name}] 服务启动...")
+        """启动监听"""
+        print(f"🔍️ [{self.name}] 服务启动...")
         self.manager = manager
 
         async def _chat_loop(text: str, sender_id: str, chat_id: str):
@@ -106,62 +113,55 @@ class StoryboardAgent(ReActAgent):
 
     @classmethod
     def build_from_env(cls) -> Optional[Dict]:
-        app_id = os.environ.get("STORYBOARD_APP_ID")
-        app_secret = os.environ.get("STORYBOARD_APP_SECRET")
-        bot_name = os.environ.get("STORYBOARD_FEISHU_NAME", "Storyboard Bot")
-        specific_api_key = os.environ.get("STORYBOARD_API_KEY")
+        app_id = os.environ.get("PRODUCE_APP_ID")
+        app_secret = os.environ.get("PRODUCE_APP_SECRET")
+        bot_name = os.environ.get("PRODUCE_FEISHU_NAME")
+        specific_api_key = os.environ.get("PRODUCE_API_KEY")
 
         if not app_id or not app_secret:
-            print("⚠️ [StoryboardAgent] 缺少环境变量，跳过。")
+            print("⚠️ [ProduceAgent] 缺少环境变量，跳过。")
             return None
 
-        print("🎥 [StoryboardAgent] 正在组装...")
+        print("🔍️ [ProduceAgent] 正在组装...")
 
-        note_tool = AgentNotebook(agent_name="StoryboardAgent")
+        # 1. 工具
+        note_tool = AgentNotebook(agent_name="ProduceAgent")
         fs_tool = FileTool()
 
         toolkit = Toolkit()
         tools_list = [
-            fs_tool.init_shot_structure,  # 建分镜目录
-
-            # 核心：存镜头
-            note_tool.save_shot,
-            note_tool.get_shot,
-
-            # 核心：读素材 (只读不写)
-            note_tool.get_scene,  # 读环境
-            note_tool.get_design_asset,  # 读人设 (会自动触发OSS桥接)
-
-            # 杂项
-            fs_tool.save_image_file,
+            fs_tool.init_scene_structure,  # 建场
+            note_tool.save_scene,  # 存设定
+            note_tool.get_scene,  # 查设定
+            fs_tool.save_image_file,  # 存图
             note_tool.save_memento,
-            note_tool.get_prompt_template,
-            note_tool.get_dashboard
+            note_tool.get_prompt_template
         ]
         for t in tools_list: toolkit.register_tool_function(t)
 
+        # 2. 记忆
         dashscope_key = os.environ.get("EMBEDDING_API_KEY")
         embedding_model = DashScopeTextEmbedding(model_name="text-embedding-v2", api_key=dashscope_key)
 
+        # 记忆LLM配置
         llm_config = load_model_config("qwen3-vl_config", override_api_key=specific_api_key)
         llm_config.pop("config_name", None)
         mem0_llm = DashScopeChatModel(**llm_config)
 
-        # 独立的 Memory 路径
-        db_path = "/app/data/mem0_storyboard_db"
+        db_path = "/app/data/mem0_produce_db"
         if not os.path.exists(db_path): os.makedirs(db_path, exist_ok=True)
 
         vector_config = VectorStoreConfig(provider="qdrant", config={"path": db_path})
 
         memory = Mem0LongTermMemory(
-            agent_name="StoryboardAgent",
+            agent_name="ProduceAgent",
             user_name="User",
             model=mem0_llm,
             embedding_model=embedding_model,
             vector_store_config=vector_config
         )
 
-        agent = cls(name="StoryboardAgent", toolkit=toolkit, memory=memory, api_key=specific_api_key)
+        agent = cls(name="ProduceAgent", toolkit=toolkit, memory=memory, api_key=specific_api_key)
         manager = LarkManager(app_id, app_secret, bot_name=bot_name)
 
-        return {"name": "StoryboardAgent", "agent": agent, "manager": manager}
+        return {"name": "ProduceAgent", "agent": agent, "manager": manager}

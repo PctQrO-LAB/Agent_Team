@@ -104,6 +104,10 @@ class ConceptAgent(ReActAgent):
             finally:
                 self.current_chat_id = None
 
+            if any(k in text for k in ["退下", "结束", "再见"]):
+                self.memory.clear()
+                await manager.reply(chat_id, "✅ 短期记忆已清理。")
+
         manager.bind_handler(_chat_loop)
         manager.start()
 

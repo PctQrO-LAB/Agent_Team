@@ -7,3 +7,4 @@ apscheduler
 mem0ai
 dotenv
 oss2
+Flask

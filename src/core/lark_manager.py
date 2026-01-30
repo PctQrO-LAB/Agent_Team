@@ -4,14 +4,8 @@ import logging
 import asyncio
 import oss2
 import lark_oapi as lark
-from lark_oapi.api.im.v1 import *
+from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody, GetMessageResourceRequest
 from typing import Any, Union, List, Dict
-
-# 引入 nest_asyncio
-try:
-    import nest_asyncio
-except ImportError:
-    nest_asyncio = None
 
 # 设置日志格式，移除统一的 Launcher logger，改为动态获取
 logging.basicConfig(level=logging.INFO)
@@ -19,18 +13,16 @@ logging.basicConfig(level=logging.INFO)
 
 class LarkManager:
     """
-    [飞书网关 v10.0 - 多实例增强版]
-    1. 增加线程异常捕获，防止 WebSocket 静默崩溃。
-    2. 日志增加 bot_name 前缀，便于多 Agent 调试。
+    飞书出站客户端：仅负责主动调用飞书 API（发消息、取资源、OSS 上传等）。
+    不再持有 WebSocket/事件派发；入站由 webhook 负责。
     """
 
     def __init__(self, app_id: str, app_secret: str, bot_name: str = "UnknownBot"):
         self.app_id = app_id
         self.app_secret = app_secret
         self.bot_name = bot_name
-        self.message_handler = None
+        self.message_handler = None  # 保留给 webhook 注入回调所用
 
-        # 独立的 Logger
         self.logger = logging.getLogger(f"Lark_{bot_name}")
 
         # --- OSS 初始化 ---
@@ -48,125 +40,13 @@ class LarkManager:
             except Exception as e:
                 self.logger.error(f"❌ [Init] OSS 连接失败: {e}")
 
-        # --- 异步 Loop 获取 ---
-        try:
-            self.main_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            self.main_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.main_loop)
-
-        if nest_asyncio:
-            nest_asyncio.apply(self.main_loop)
-
-        # --- 1. HTTP Client ---
+        # --- HTTP Client ---
         self.api_client = lark.Client.builder() \
             .app_id(app_id).app_secret(app_secret).log_level(lark.LogLevel.INFO).build()
 
-        # --- 2. WebSocket Client ---
-        event_handler = lark.EventDispatcherHandler.builder("", "") \
-            .register_p2_im_message_receive_v1(self._on_ws_message) \
-            .build()
-
-        self.ws = lark.ws.Client(
-            app_id,
-            app_secret,
-            event_handler=event_handler,
-            log_level=lark.LogLevel.INFO
-        )
-
     def start(self):
-        """
-        [启动服务] 增加 Future 回调以捕获线程中的崩溃
-        """
-        if not self.ws:
-            self.logger.error("❌ WebSocket Client 未初始化")
-            return
-
-        def _handle_ws_crash(future):
-            try:
-                future.result()  # 如果线程里抛出异常，这里会重新抛出
-            except Exception as e:
-                self.logger.error(f"❌ 严重错误: WebSocket 进程意外崩溃! 错误: {e}", exc_info=True)
-
-        try:
-            loop = asyncio.get_running_loop()
-            # 🔥 捕获 Future 对象
-            future = loop.run_in_executor(None, self.ws.start)
-            # 添加回调，如果线程挂了，通知主线程
-            future.add_done_callback(_handle_ws_crash)
-
-            self.logger.info(f"✅ WebSocket 服务已在后台启动")
-        except RuntimeError:
-            self.logger.warning(f"⚠️ 无运行中 Loop，降级为阻塞启动")
-            self.ws.start()
-
-    def _on_ws_message(self, data: P2ImMessageReceiveV1) -> None:
-        """回调函数"""
-        # 🔥 调试日志：确认是否收到了底层事件
-        # self.logger.info("⚡ 收到底层 WebSocket 事件...")
-
-        if not self.message_handler: return
-        try:
-            event = data.event
-            message = event.message
-            content_json = json.loads(message.content)
-            msg_type = message.message_type
-
-            msg_content = []
-
-            # A. 纯文本
-            if msg_type == "text":
-                text = content_json.get("text", "").strip()
-                if text:
-                    msg_content.append({"type": "text", "text": text})
-
-            # B. 图片
-            elif msg_type == "image":
-                image_key = content_json.get("image_key")
-                img_block = self._create_image_block(message.message_id, image_key)
-                if img_block:
-                    msg_content.append({"type": "text", "text": "User sent an image:"})
-                    msg_content.append(img_block)
-                else:
-                    msg_content.append({"type": "text", "text": f"[System: Image upload failed]"})
-
-            # C. Post 富文本
-            elif msg_type == "post":
-                msg_content = self._parse_post_content(content_json, message.message_id)
-
-            else:
-                msg_content = [{"type": "text", "text": f"[Unsupported: {msg_type}]"}]
-
-            # D. 群聊过滤
-            sender_id = event.sender.sender_id.open_id
-            if message.chat_type == "group":
-                mentions = getattr(message, "mentions", [])
-                if not mentions: return
-                # 这里的 self.bot_name 是我们在 __init__ 里传入的名字
-                # 确保它和飞书群里 @ 的名字（或别名）一致，否则这里会过滤掉
-                if self.bot_name:
-                    # 模糊匹配：只要 mention 的 name 包含 bot_name 或者是 bot_name 的一部分
-                    is_at_me = any(self.bot_name in m.name or m.name in self.bot_name for m in mentions)
-                    if not is_at_me:
-                        # self.logger.debug(f"群聊消息忽略，未 @ 我 ({self.bot_name})")
-                        return
-
-                    # 清理 @文本
-                    for block in msg_content:
-                        if block.get("type") == "text":
-                            for m in mentions:
-                                if m.key: block["text"] = block["text"].replace(m.key, "").strip()
-
-            # E. 投递
-            self.logger.info(f"📩 收到有效消息 (User: {sender_id}), 正在投递给 Agent...")
-            if self.main_loop and not self.main_loop.is_closed():
-                asyncio.run_coroutine_threadsafe(
-                    self.message_handler(msg_content, sender_id, message.chat_id),
-                    self.main_loop
-                )
-
-        except Exception as e:
-            self.logger.error(f"消息处理异常: {e}", exc_info=True)
+        """Webhook 模式下无需启动任何长连接，保留接口作兼容。"""
+        self.logger.info("ℹ️ Webhook 模式：LarkManager 不再启动 WebSocket，只负责出站调用")
 
     def _process_image_stream(self, message_id, image_key):
         if not self.bucket: return None

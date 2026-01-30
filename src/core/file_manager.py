@@ -85,20 +85,6 @@ class FileManager:
             json.dump(content, f, ensure_ascii=False, indent=2)
         return full_path
 
-    def save_image(self, dir_path: str, file_name: str, image_data_b64: str) -> str:
-        """保存 Base64 图片"""
-        if not dir_path.startswith(self.ROOT_PATH):
-            raise ValueError(f"Access Denied: {dir_path}")
-
-        full_path = os.path.join(dir_path, file_name)
-
-        # 清洗 Base64 头部
-        if "," in image_data_b64:
-            image_data_b64 = image_data_b64.split(",")[1]
-
-        with open(full_path, "wb") as f:
-            f.write(base64.b64decode(image_data_b64))
-        return full_path
 
     # =================================================
     # ☁️ 自动桥接 (Auto-Bridge)
