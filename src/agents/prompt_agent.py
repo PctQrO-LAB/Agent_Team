@@ -18,6 +18,8 @@ from src.config.prompts import PROMPT_SYSTEM_PROMPT
 from src.tools.file_tools import FileTool
 from src.core.load_model import load_model_config
 from src.core.lark_manager import LarkManager  # 用于 build_from_env
+from src.core.skill_loader import register_agent_skills_from_env
+from src.utils.message_utils import normalize_message_content
 
 try:
         from mem0.configs.base import VectorStoreConfig
@@ -44,8 +46,8 @@ class PromptAgent(ReActAgent):
             formatter=DashScopeChatFormatter(),
             toolkit=toolkit,
             memory=InMemoryMemory(),
-            long_term_memory=memory,  # 🔥 继承长期记忆
-            long_term_memory_mode="both",
+            long_term_memory=None,
+            long_term_memory_mode="agent_control",
             max_iters=15,
         )
 
@@ -110,12 +112,17 @@ class PromptAgent(ReActAgent):
         print(f"🎨 [{self.name}] 正在初始化服务...")
         self.manager = manager
 
-        async def _chat_loop(text: str, sender_id: str, chat_id: str):
+        async def _chat_loop(content, sender_id: str, chat_id: str):
             print(f"⚡ [{self.name}] 收到视觉需求 | User: {sender_id}")
 
             # 每次对话前，设置上下文 ID，以便 Hook 能发消息
             self.current_chat_id = chat_id
-            msg = Msg(name="user", content=text, role="user")
+            try:
+                await manager.reply(chat_id, "✅ 已收到消息")
+            except Exception as e:
+                print(f"⚠️ Ack Error: {e}")
+            model_content, plain_text = normalize_message_content(content)
+            msg = Msg(name="user", content=model_content, role="user")
 
             try:
                 response = await self(msg)
@@ -158,16 +165,17 @@ class PromptAgent(ReActAgent):
 
         # C. 注册工具
         tools_list = [
-            note_tool.get_prompt_template,
             note_tool.get_latest_version,  # 👈 刚才修复的那个方法
             note_tool.register_asset,
             note_tool.read_note,  # 允许它读笔记本
             note_tool.save_memento,  # 允许它写长期记忆
             fs_tool.init_shot_structure,
-            fs_tool.save_prompt_file
+            # Prompt/图已由 n8n 处理，不再在本地落盘
         ]
         for t in tools_list:
             toolkit.register_tool_function(t)
+
+        register_agent_skills_from_env(toolkit)
 
         # 2. 初始化长期记忆 (Mem0)
         # 这里的 user_name 可以写 "DirectorUser" 或者统一 "User"
@@ -197,6 +205,8 @@ class PromptAgent(ReActAgent):
             embedding_model=embedding_model,
             vector_store_config=vector_config_obj  # 👈 传入对象
         )
+
+        note_tool.set_long_term_memory(memory)
 
         # 3. 加载视觉模型配置 (针对 Agent 自身的 VLM 能力)
         # 🔥 关键修改：直接加载你现有的 qwen3-vl_config

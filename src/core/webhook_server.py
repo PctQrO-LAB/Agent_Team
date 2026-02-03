@@ -10,6 +10,8 @@ import lark_oapi as lark
 from lark_oapi.adapter.flask import parse_req, parse_resp
 from lark_oapi.core.exception import EventException
 from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
+from src.core.message_adapters.n8n_adapter import extract_n8n_message
+from src.core.message_adapters.lark_adapter import extract_message_from_p2
 
 logger = logging.getLogger("WebhookServer")
 
@@ -23,95 +25,6 @@ class WebhookEndpointConfig:
     event_loop: Optional[asyncio.AbstractEventLoop] = None  # 主事件循环，用于线程安全派发
 
 
-def _extract_message(event: Dict[str, Any], bot_name: str) -> Optional[Tuple[list, str, str]]:
-    """从飞书消息事件中提取内容、发送者、会话信息"""
-    message = event.get("message") or {}
-    sender = event.get("sender") or {}
-    sender_id = ((sender.get("sender_id") or {}).get("open_id")
-                 or (sender.get("sender_id") or {}).get("user_id"))
-    chat_id = (message.get("chat_id")
-               or (message.get("chat_id") or ""))
-
-    msg_type = message.get("message_type")
-    content_raw = message.get("content")
-    if not content_raw:
-        return None
-
-    try:
-        content_json = json.loads(content_raw)
-    except Exception:
-        return None
-
-    msg_content = []
-
-    if msg_type == "text":
-        text = (content_json.get("text") or "").strip()
-
-        # 群聊场景：如果有 @，仅在 @ 当前机器人时才处理
-        mentions = event.get("mentions") or []
-        if mentions and bot_name:
-            is_at_me = any(
-                (bot_name in (m.get("name") or "")) or ((m.get("name") or "") in bot_name)
-                for m in mentions
-            )
-            if not is_at_me:
-                return None
-
-            # 清理 @ 文本
-            for m in mentions:
-                key = m.get("key")
-                if key:
-                    text = text.replace(key, "").strip()
-
-        if text:
-            msg_content.append({"type": "text", "text": text})
-
-    if not msg_content:
-        return None
-
-    return msg_content, sender_id, chat_id
-
-
-def _extract_message_from_p2(event: P2ImMessageReceiveV1, bot_name: str) -> Optional[Tuple[list, str, str]]:
-    """从 v2.0 事件模型中提取文本消息"""
-    message = event.event.message
-    sender = event.event.sender
-
-    sender_id = sender.sender_id.open_id or sender.sender_id.user_id
-    chat_id = message.chat_id
-    msg_type = message.message_type
-
-    try:
-        content_json = json.loads(message.content)
-    except Exception:
-        return None
-
-    msg_content = []
-
-    if msg_type == "text":
-        text = (content_json.get("text") or "").strip()
-
-        mentions = getattr(message, "mentions", []) or []
-        if mentions and bot_name:
-            is_at_me = any(
-                (bot_name in (m.name or "")) or ((m.name or "") in bot_name)
-                for m in mentions
-            )
-            if not is_at_me:
-                return None
-            for m in mentions:
-                if m.key:
-                    text = text.replace(m.key, "").strip()
-
-        if text:
-            msg_content.append({"type": "text", "text": text})
-
-    if not msg_content:
-        return None
-
-    return msg_content, sender_id, chat_id
-
-
 def _build_handler(config: WebhookEndpointConfig) -> Any:
     # 统一用官方 SDK 处理校验/解密，Encrypt Key 可为空
     builder = lark.EventDispatcherHandler.builder(
@@ -122,7 +35,7 @@ def _build_handler(config: WebhookEndpointConfig) -> Any:
 
     # 注册 v2.0 消息事件，解析后转发给对应 manager
     def on_im_message(data: P2ImMessageReceiveV1):
-        extracted = _extract_message_from_p2(data, config.manager.bot_name)
+        extracted = extract_message_from_p2(data, config.manager, config.manager.bot_name)
         if extracted and config.manager.message_handler:
             msg_content, sender_id, chat_id = extracted
             try:
@@ -166,6 +79,46 @@ def build_webhook_app(endpoint_map: Dict[str, WebhookEndpointConfig]) -> Flask:
             abort(404, description="Unknown endpoint")
 
         cfg = endpoint_map[endpoint]
+
+        payload = request.get_json(silent=True) or {}
+        if not payload:
+            # 兼容非 JSON 请求（如 form 或 raw body）
+            if request.form:
+                payload = request.form.to_dict()
+            else:
+                raw_body = request.get_data(as_text=True) or ""
+                try:
+                    payload = json.loads(raw_body) if raw_body.strip().startswith("{") else {}
+                except Exception:
+                    payload = {}
+        is_n8n = str(payload.get("source", "")).lower() == "n8n"
+        if not is_n8n:
+            if ("event" not in payload and "schema" not in payload and
+                    any(k in payload for k in ["text", "prompt", "image_url", "image_urls"])):
+                is_n8n = True
+
+        if is_n8n:
+            msg_content, sender_id, chat_id = extract_n8n_message(payload)
+
+            if cfg.manager.message_handler:
+                try:
+                    dispatch_coro = cfg.manager.message_handler(msg_content, sender_id, chat_id)
+                    target_loop = cfg.event_loop
+
+                    if target_loop and target_loop.is_running():
+                        asyncio.run_coroutine_threadsafe(dispatch_coro, target_loop)
+                    else:
+                        def _runner():
+                            try:
+                                asyncio.run(dispatch_coro)
+                            except Exception as exc:
+                                logger.error(f"❌ Background dispatch failed: {exc}", exc_info=True)
+
+                        threading.Thread(target=_runner, daemon=True, name=f"{cfg.manager.bot_name}-dispatch").start()
+                except Exception as exc:
+                    logger.error(f"❌ Failed to dispatch n8n message: {exc}", exc_info=True)
+
+            return {"ok": True, "chat_id": chat_id}
 
         # 优先处理 URL 校验，直接回传 challenge，避免 SDK 分支差异
         payload = request.get_json(silent=True) or {}

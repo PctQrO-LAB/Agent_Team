@@ -12,10 +12,13 @@ from agentscope.message import Msg
 
 from src.core.load_model import load_model_config
 from src.core.lark_manager import LarkManager
+from src.core.skill_loader import register_agent_skills
 from src.tools.note_tools import AgentNotebook
 from src.tools.file_tools import FileTool
+from src.tools.generate_tools import GenerationTool
 
-from src.config.prompts import TEST_SYSTEM_PROMPT
+from src.config.prompts import STORYBOARD_SYSTEM_PROMPT
+from src.utils.message_utils import normalize_message_content
 
 try:
     from mem0.configs.base import VectorStoreConfig
@@ -34,7 +37,7 @@ class StoryboardAgent(ReActAgent):
         config_args = load_model_config("qwen3-vl_config", override_api_key=api_key)
         config_args.pop("config_name", None)
         model_instance = DashScopeChatModel(**config_args)
-        sys_prompt = TEST_SYSTEM_PROMPT
+        sys_prompt = STORYBOARD_SYSTEM_PROMPT
 
         super().__init__(
             name=name,
@@ -43,8 +46,8 @@ class StoryboardAgent(ReActAgent):
             formatter=DashScopeChatFormatter(),
             toolkit=toolkit,
             memory=InMemoryMemory(),
-            long_term_memory=memory,
-            long_term_memory_mode="both",
+            long_term_memory=None,
+            long_term_memory_mode="agent_control",
             max_iters=15,
         )
 
@@ -84,10 +87,15 @@ class StoryboardAgent(ReActAgent):
         print(f"🎥 [{self.name}] 服务启动...")
         self.manager = manager
 
-        async def _chat_loop(text: str, sender_id: str, chat_id: str):
+        async def _chat_loop(content, sender_id: str, chat_id: str):
             print(f"⚡ [{self.name}] 收到指令 | ChatID: {chat_id}")
             self.current_chat_id = chat_id
-            msg = Msg(name="user", content=text, role="user")
+            try:
+                await manager.reply(chat_id, "✅ 已收到消息")
+            except Exception as e:
+                print(f"⚠️ Ack Error: {e}")
+            model_content, plain_text = normalize_message_content(content)
+            msg = Msg(name="user", content=model_content, role="user")
             try:
                 response = await self(msg)
                 await manager.reply(chat_id, response.content)
@@ -97,7 +105,7 @@ class StoryboardAgent(ReActAgent):
             finally:
                 self.current_chat_id = None
 
-            if any(k in text for k in ["退下", "结束", "再见"]):
+            if any(k in plain_text for k in ["退下", "结束", "再见"]):
                 self.memory.clear()
                 await manager.reply(chat_id, "✅ 短期记忆已清理。")
 
@@ -119,6 +127,7 @@ class StoryboardAgent(ReActAgent):
 
         note_tool = AgentNotebook(agent_name="StoryboardAgent")
         fs_tool = FileTool()
+        gen_tool = GenerationTool()
 
         toolkit = Toolkit()
         tools_list = [
@@ -133,12 +142,19 @@ class StoryboardAgent(ReActAgent):
             note_tool.get_design_asset,  # 读人设 (会自动触发OSS桥接)
 
             # 杂项
-            fs_tool.save_image_file,
             note_tool.save_memento,
-            note_tool.get_prompt_template,
-            note_tool.get_dashboard
+            note_tool.get_dashboard,
+            fs_tool.read_image_as_url,  # 看本地参考图
+            gen_tool.generate_image  # 生图
         ]
         for t in tools_list: toolkit.register_tool_function(t)
+
+        register_agent_skills(toolkit, [
+            "skills/film_notebook",
+            "skills/memory_notebook",
+            "skills/file_tools",
+            "skills/generate_tools"
+        ])
 
         dashscope_key = os.environ.get("EMBEDDING_API_KEY")
         embedding_model = DashScopeTextEmbedding(model_name="text-embedding-v2", api_key=dashscope_key)
@@ -160,6 +176,8 @@ class StoryboardAgent(ReActAgent):
             embedding_model=embedding_model,
             vector_store_config=vector_config
         )
+
+        note_tool.set_long_term_memory(memory)
 
         agent = cls(name="StoryboardAgent", toolkit=toolkit, memory=memory, api_key=specific_api_key)
         manager = LarkManager(app_id, app_secret, bot_name=bot_name)

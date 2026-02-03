@@ -71,6 +71,16 @@ class FileManager:
         # 结构: Project/Scene/Shot/v1
         return self._ensure_dir(os.path.join(self.ROOT_PATH, project, scene, shot, f"v{version}"))
 
+    def init_directory(self, relative_path: str) -> str:
+        """
+        创建任意相对 ROOT_PATH 的目录，用于设计类通用路径。
+        relative_path 不能包含 ".." 以防越权。
+        """
+        if ".." in relative_path:
+            raise ValueError("Access Denied: relative_path contains '..'")
+        abs_path = os.path.join(self.ROOT_PATH, relative_path)
+        return self._ensure_dir(abs_path)
+
     # =================================================
     # 💾 物理动作 (Physical I/O)
     # =================================================
@@ -83,6 +93,26 @@ class FileManager:
         full_path = os.path.join(dir_path, file_name)
         with open(full_path, "w", encoding="utf-8") as f:
             json.dump(content, f, ensure_ascii=False, indent=2)
+        return full_path
+
+    def save_image(self, dir_path: str, file_name: str, image_data_base64: str) -> str:
+        """
+        保存 Base64 图片到指定目录。
+        仅允许写入 ROOT_PATH 下路径。
+        """
+        if not dir_path.startswith(self.ROOT_PATH):
+            raise ValueError(f"Access Denied: {dir_path}")
+
+        self._ensure_dir(dir_path)
+        full_path = os.path.join(dir_path, file_name)
+
+        # 去掉 data URL 前缀（如有）
+        if image_data_base64.startswith("data:image"):
+            image_data_base64 = image_data_base64.split(",", 1)[-1]
+
+        with open(full_path, "wb") as f:
+            f.write(base64.b64decode(image_data_base64))
+
         return full_path
 
 

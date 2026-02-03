@@ -12,10 +12,12 @@ from agentscope.message import Msg
 
 from src.core.load_model import load_model_config
 from src.core.lark_manager import LarkManager
+from src.core.skill_loader import register_agent_skills_from_env
 from src.tools.note_tools import AgentNotebook
 from src.tools.file_tools import FileTool
 
 from src.config.prompts import TEST_SYSTEM_PROMPT
+from src.utils.message_utils import normalize_message_content
 
 try:
     from mem0.configs.base import VectorStoreConfig
@@ -43,8 +45,8 @@ class CastingAgent(ReActAgent):
             formatter=DashScopeChatFormatter(),
             toolkit=toolkit,
             memory=InMemoryMemory(),
-            long_term_memory=memory,
-            long_term_memory_mode="both",
+            long_term_memory=None,
+            long_term_memory_mode="agent_control",
             max_iters=15,
         )
 
@@ -84,10 +86,15 @@ class CastingAgent(ReActAgent):
         print(f"💃 [{self.name}] 服务启动...")
         self.manager = manager
 
-        async def _chat_loop(text: str, sender_id: str, chat_id: str):
+        async def _chat_loop(content, sender_id: str, chat_id: str):
             print(f"⚡ [{self.name}] 收到指令 | ChatID: {chat_id}")
             self.current_chat_id = chat_id
-            msg = Msg(name="user", content=text, role="user")
+            try:
+                await manager.reply(chat_id, "✅ 已收到消息")
+            except Exception as e:
+                print(f"⚠️ Ack Error: {e}")
+            model_content, plain_text = normalize_message_content(content)
+            msg = Msg(name="user", content=model_content, role="user")
             try:
                 response = await self(msg)
                 await manager.reply(chat_id, response.content)
@@ -121,11 +128,12 @@ class CastingAgent(ReActAgent):
             fs_tool.init_character_structure,  # 建人设目录
             note_tool.save_character,  # 存人设
             note_tool.get_character,  # 查人设
-            fs_tool.save_image_file,  # 存图
+            fs_tool.read_image_as_url,  # 看本地参考图
             note_tool.save_memento,
-            note_tool.get_prompt_template
         ]
         for t in tools_list: toolkit.register_tool_function(t)
+
+        register_agent_skills_from_env(toolkit)
 
         dashscope_key = os.environ.get("EMBEDDING_API_KEY")
         embedding_model = DashScopeTextEmbedding(model_name="text-embedding-v2", api_key=dashscope_key)
@@ -147,6 +155,8 @@ class CastingAgent(ReActAgent):
             embedding_model=embedding_model,
             vector_store_config=vector_config
         )
+
+        note_tool.set_long_term_memory(memory)
 
         agent = cls(name="CastingAgent", toolkit=toolkit, memory=memory, api_key=specific_api_key)
         manager = LarkManager(app_id, app_secret, bot_name=bot_name)

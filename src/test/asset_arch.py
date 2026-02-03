@@ -57,20 +57,8 @@ def test_architecture():
     dir_path = get_text(res)
     print(f"    >>> 目录已就绪: {dir_path}")
 
-    # 2.3 写入 Prompt 文件 (物理层)
-    print(f"[3] 物理层操作: 正在写入 prompt.json...")
-    prompt_data = {
-        "description": "A cyberpunk city street at night, neon lights, rain.",
-        "model": "midjourney",
-        "params": "--ar 16:9 --v 6.0"
-    }
-    res_write = fs_tool.save_prompt_file(dir_path, prompt_data)
-
-    # 🔥 修复点 2：使用 get_text
-    print(f"    >>> {get_text(res_write)}")
-
-    # 2.4 注册资产 (逻辑层)
-    print(f"[4] 逻辑层操作: 注册到数据库...")
+    # 2.3 逻辑层注册（示例跳过本地落盘，由外部工作流负责）
+    print(f"[3] 逻辑层操作: 注册到数据库（假设外部已生成文件）...")
     final_file_path = os.path.join(dir_path, "prompt.json")
     res_reg = db_tool.register_asset(project, scene, shot, final_file_path, new_ver)
 

@@ -12,6 +12,7 @@ from agentscope.message import Msg
 
 from src.core.load_model import load_model_config
 from src.core.lark_manager import LarkManager
+from src.core.skill_loader import register_agent_skills
 from src.tools.note_tools import AgentNotebook
 from src.tools.file_tools import FileTool
 
@@ -24,6 +25,7 @@ except ImportError:
 
 # ✨ 引用最新的视觉设计 Prompt
 from src.config.prompts import DESIGN_SYSTEM_PROMPT
+from src.utils.message_utils import normalize_message_content
 
 try:
     from mem0.configs.base import VectorStoreConfig
@@ -55,8 +57,8 @@ class DesignAgent(ReActAgent):
             formatter=DashScopeChatFormatter(),
             toolkit=toolkit,
             memory=InMemoryMemory(),
-            long_term_memory=memory,
-            long_term_memory_mode="both",
+            long_term_memory=None,
+            long_term_memory_mode="agent_control",
             max_iters=15,
         )
 
@@ -96,14 +98,19 @@ class DesignAgent(ReActAgent):
         print(f"🎨 [{self.name}] 视觉设计服务启动...")
         self.manager = manager
 
-        async def _chat_loop(text: str, sender_id: str, chat_id: str):
+        async def _chat_loop(content, sender_id: str, chat_id: str):
             print(f"⚡ [{self.name}] 收到设计指令 | ChatID: {chat_id}")
             self.current_chat_id = chat_id
+            try:
+                await manager.reply(chat_id, "✅ 已收到消息")
+            except Exception as e:
+                print(f"⚠️ Ack Error: {e}")
 
             # 可以在这里注入 Project 上下文，如果 manager 能传递的话
             # content = f"[Context: Project=Default] {text}"
 
-            msg = Msg(name="user", content=text, role="user")
+            model_content, plain_text = normalize_message_content(content)
+            msg = Msg(name="user", content=model_content, role="user")
             try:
                 response = await self(msg)
                 await manager.reply(chat_id, response.content)
@@ -113,7 +120,7 @@ class DesignAgent(ReActAgent):
             finally:
                 self.current_chat_id = None
 
-            if any(k in text for k in ["没事了", "结束", "再见"]):
+            if any(k in plain_text for k in ["没事了", "结束", "再见"]):
                 self.memory.clear()
                 await manager.reply(chat_id, "✅ 短期记忆已清理。")
 
@@ -145,13 +152,10 @@ class DesignAgent(ReActAgent):
         tools_list = [
             # 1. 筑巢 (Init)
             fs_tool.init_design_structure,
-            # 2. 归档 (Prompt File)
-            fs_tool.save_prompt_file,
-            # 3. 登记/回填 (Register/Backfill)
+            # 2. 登记/回填 (Register/Backfill)
             note_tool.save_design_asset,
             # 4. 查阅 (Query)
             note_tool.get_design_asset,
-            note_tool.get_prompt_template,
             note_tool.save_memento,
             # 视觉感知 (用于看参考图)
             fs_tool.read_image_as_url,
@@ -164,6 +168,13 @@ class DesignAgent(ReActAgent):
             print("⚠️ Warning: GenerationTool not found. Agent cannot delegate image generation.")
 
         for t in tools_list: toolkit.register_tool_function(t)
+
+        register_agent_skills(toolkit, [
+            "skills/film_notebook",
+            "skills/memory_notebook",
+            "skills/file_tools",
+            "skills/generate_tools"
+        ])
 
         # Embedding & LLM Setup
         dashscope_key = os.environ.get("EMBEDDING_API_KEY")
@@ -186,6 +197,8 @@ class DesignAgent(ReActAgent):
             embedding_model=embedding_model,
             vector_store_config=vector_config
         )
+
+        note_tool.set_long_term_memory(memory)
 
         agent = cls(name="DesignAgent", toolkit=toolkit, memory=memory, api_key=specific_api_key)
         manager = LarkManager(app_id, app_secret, bot_name=bot_name)

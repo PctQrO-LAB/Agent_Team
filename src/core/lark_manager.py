@@ -4,6 +4,7 @@ import logging
 import asyncio
 import oss2
 import lark_oapi as lark
+from lark_oapi.api.contact.v3 import BatchGetIdUserRequest, BatchGetIdUserRequestBody
 from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody, GetMessageResourceRequest
 from typing import Any, Union, List, Dict
 
@@ -43,18 +44,53 @@ class LarkManager:
         # --- HTTP Client ---
         self.api_client = lark.Client.builder() \
             .app_id(app_id).app_secret(app_secret).log_level(lark.LogLevel.INFO).build()
+        self._cached_open_id = None
+
+    def _resolve_user_open_id(self) -> str | None:
+        if self._cached_open_id:
+            return self._cached_open_id
+
+        user_email = os.environ.get("USER_EMAIL")
+        user_mobile = os.environ.get("USER_MOBILE")
+        if not user_email and not user_mobile:
+            return os.environ.get("USER_OPEN_ID")
+
+        try:
+            body_builder = BatchGetIdUserRequestBody.builder()
+            if user_email:
+                body_builder.emails([user_email])
+            if user_mobile:
+                body_builder.mobiles([user_mobile])
+            body = body_builder.build()
+
+            req = BatchGetIdUserRequest.builder() \
+                .user_id_type("open_id") \
+                .request_body(body) \
+                .build()
+
+            resp = self.api_client.contact.v3.user.batch_get_id(req)
+            if resp.success() and resp.data and resp.data.user_list:
+                open_id = resp.data.user_list[0].user_id
+                self._cached_open_id = open_id
+                return open_id
+        except Exception as e:
+            self.logger.error(f"❌ OpenID resolve failed: {e}")
+
+        return os.environ.get("USER_OPEN_ID")
 
     def start(self):
         """Webhook 模式下无需启动任何长连接，保留接口作兼容。"""
         self.logger.info("ℹ️ Webhook 模式：LarkManager 不再启动 WebSocket，只负责出站调用")
 
     def _process_image_stream(self, message_id, image_key):
-        if not self.bucket: return None
+        if not self.bucket:
+            return None
         try:
             req = GetMessageResourceRequest.builder() \
                 .message_id(message_id).file_key(image_key).type("image").build()
             resp = self.api_client.im.v1.message_resource.get(req)
-            if not resp.success(): return None
+            if not resp.success():
+                return None
 
             object_name = f"agent_images/{message_id}_{image_key}.jpg"
             self.bucket.put_object(object_name, resp.file)
@@ -88,7 +124,7 @@ class LarkManager:
             return [{"type": "text", "text": "[Post Error]"}]
         return msg_content if msg_content else [{"type": "text", "text": "[Empty Post]"}]
 
-    async def reply(self, chat_id, response):
+    async def reply(self, receive_id, response, receive_id_type: str = "chat_id"):
         clean_text = ""
         if isinstance(response, str):
             clean_text = response
@@ -99,10 +135,19 @@ class LarkManager:
         else:
             clean_text = str(response)
 
+        if isinstance(receive_id, str) and receive_id.startswith("n8n:"):
+            fallback_open_id = self._resolve_user_open_id()
+            if fallback_open_id:
+                receive_id = fallback_open_id
+                receive_id_type = "open_id"
+            else:
+                self.logger.error("❌ No USER_OPEN_ID/USER_EMAIL/USER_MOBILE configured.")
+                return
+
         card = {"config": {"wide_screen_mode": True},
                 "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": clean_text}}]}
-        req = CreateMessageRequest.builder().receive_id_type("chat_id") \
-            .request_body(CreateMessageRequestBody.builder().receive_id(chat_id).msg_type("interactive")
+        req = CreateMessageRequest.builder().receive_id_type(receive_id_type) \
+            .request_body(CreateMessageRequestBody.builder().receive_id(receive_id).msg_type("interactive")
                           .content(json.dumps(card)).build()).build()
 
         # 增加回复的错误捕获

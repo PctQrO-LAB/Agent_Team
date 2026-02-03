@@ -17,7 +17,9 @@ from src.tools.lark_schedule_tools import LarkScheduleTool
 from src.tools.note_tools import AgentNotebook
 from src.tools.clock_tool import ClockTool
 from src.core.lark_manager import LarkManager
+from src.core.skill_loader import register_agent_skills
 from agentscope.message import Msg
+from src.utils.message_utils import normalize_message_content
 try:
         from mem0.configs.base import VectorStoreConfig
         from mem0.configs.vector_stores.qdrant import QdrantConfig
@@ -46,8 +48,8 @@ class ScheduleAgent(ReActAgent):
             formatter=DeepSeekChatFormatter(),
             toolkit=toolkit,
             memory=InMemoryMemory(),
-            long_term_memory=memory,
-            long_term_memory_mode="both",
+            long_term_memory=None,
+            long_term_memory_mode="agent_control",
             max_iters=15,
         )
 
@@ -169,10 +171,10 @@ class ScheduleAgent(ReActAgent):
                     self.current_chat_id = user_open_id
 
                     response = await self(msg)
-                    await manager.reply(user_open_id, response.content)
+                    await manager.reply(user_open_id, response.content, receive_id_type="open_id")
 
                     if report_type == "晚报":
-                        self.memory.clear()
+                        await self.memory.clear()
                         print(f"🧹 [{self.name}] 晚报结束，短期记忆已清理。")
 
                 except Exception as e:
@@ -193,26 +195,27 @@ class ScheduleAgent(ReActAgent):
         # -----------------------------------------------------
         # Part B: 配置交互逻辑 (被动响应)
         # -----------------------------------------------------
-        async def _chat_loop(text: str, sender_id: str, chat_id: str):
+        async def _chat_loop(content, sender_id: str, chat_id: str):
             print(f"⚡ [{self.name}] 收到消息 | User: {sender_id}")
 
-            msg = Msg(name="user", content=text, role="user")
+            model_content, plain_text = normalize_message_content(content)
+            msg = Msg(name="user", content=model_content, role="user")
             try:
                 # [新增] 设置当前聊天的上下文 ID
                 self.current_chat_id = chat_id
 
                 response = await self(msg)
-                await manager.reply(chat_id, response.content)
+                await manager.reply(chat_id, response.content, receive_id_type="chat_id")
             except Exception as e:
                 print(f"❌ 运行报错: {e}")
-                await manager.reply(chat_id, f"系统错误: {e}")
+                await manager.reply(chat_id, f"系统错误: {e}", receive_id_type="chat_id")
             finally:
                 # [新增] 清理上下文
                 self.current_chat_id = None
 
-            if any(k in text for k in ["退下", "结束", "再见"]):
-                self.memory.clear()
-                await manager.reply(chat_id, "✅ 短期记忆已清理。")
+            if any(k in plain_text for k in ["退下", "结束", "再见"]):
+                await self.memory.clear()
+                await manager.reply(chat_id, "✅ 短期记忆已清理。", receive_id_type="chat_id")
 
         manager.bind_handler(_chat_loop)
         manager.start()
@@ -257,6 +260,11 @@ class ScheduleAgent(ReActAgent):
         for t in tools_list:
             toolkit.register_tool_function(t)
 
+        register_agent_skills(
+            toolkit,
+            ["skills/calendar_lark", "skills/calendar_notebook", "skills/memory_notebook"],
+        )
+
         dashscope_key = os.environ.get("EMBEDDING_API_KEY")
         embedding_model = DashScopeTextEmbedding(model_name="text-embedding-v2", api_key=dashscope_key)
         llm_config = load_model_config("deepseek_config", override_api_key=specific_api_key)
@@ -282,6 +290,8 @@ class ScheduleAgent(ReActAgent):
             embedding_model=embedding_model,
             vector_store_config=vector_config_obj  # 👈 传入构造好的对象
         )
+
+        notebook.set_long_term_memory(memory)
 
         agent_instance = cls(name="Scheduler", sys_prompt=full_sys_prompt, toolkit=toolkit, memory=memory, api_key=specific_api_key)
         manager = LarkManager(app_id, app_secret, bot_name=feishu_name)
