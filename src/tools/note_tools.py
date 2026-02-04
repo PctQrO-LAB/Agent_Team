@@ -155,8 +155,7 @@ class AgentNotebook:
                            color_tone    TEXT,
                            lighting_mood TEXT,
                            characters    TEXT,
-                           concept_url   TEXT,
-                           status        TEXT,
+                           version       INTEGER,
                            created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                            updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                            UNIQUE (project, scene)
@@ -181,6 +180,71 @@ class AgentNotebook:
                        );
                        ''')
 
+        self.shared_conn.commit()
+
+        self._migrate_scenes_table()
+
+    def _migrate_scenes_table(self):
+        """迁移 scenes 表：删除 concept 字段，将 status 改为 version。"""
+        cursor = self.shared_conn.cursor()
+        cursor.execute("PRAGMA table_info(scenes)")
+        cols = [row[1] for row in cursor.fetchall()]
+
+        has_concept = "concept_url" in cols
+        has_status = "status" in cols
+        has_version = "version" in cols
+
+        if not has_concept and not has_status and has_version:
+            return
+
+        cursor.execute('''
+                       CREATE TABLE IF NOT EXISTS scenes_new
+                       (
+                           id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                           project       TEXT,
+                           scene         TEXT,
+                           world_prompt  TEXT,
+                           elements      TEXT,
+                           mood          TEXT,
+                           color_tone    TEXT,
+                           lighting_mood TEXT,
+                           characters    TEXT,
+                           version       INTEGER,
+                           created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                           updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                           UNIQUE (project, scene)
+                       );
+                       ''')
+
+        if has_status:
+            cursor.execute("SELECT project, scene, world_prompt, elements, mood, color_tone, lighting_mood, characters, status, created_at, updated_at FROM scenes")
+        else:
+            cursor.execute("SELECT project, scene, world_prompt, elements, mood, color_tone, lighting_mood, characters, NULL as status, created_at, updated_at FROM scenes")
+        rows = cursor.fetchall()
+
+        def _parse_version(value):
+            if value is None:
+                return None
+            if isinstance(value, int):
+                return value
+            text = str(value).strip().lower()
+            if text.startswith("v") and text[1:].isdigit():
+                return int(text[1:])
+            if text.isdigit():
+                return int(text)
+            return None
+
+        for row in rows:
+            version = _parse_version(row[8])
+            cursor.execute('''
+                           INSERT OR REPLACE INTO scenes_new
+                           (project, scene, world_prompt, elements, mood, color_tone, lighting_mood, characters, version, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           ''',
+                           (row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], version, row[9], row[10]))
+
+        cursor.execute("DROP TABLE scenes")
+        cursor.execute("ALTER TABLE scenes_new RENAME TO scenes")
         self.shared_conn.commit()
 
     def _init_private_tables(self):
@@ -331,8 +395,7 @@ class AgentNotebook:
                    color_tone: str = None,
                    lighting_mood: str = None,
                    characters: str = None,
-                   concept_url: str = None,
-                   status: str = None) -> ToolResponse:
+                   version: int = None) -> ToolResponse:
         try:
             cursor = self.shared_conn.cursor()
             cursor.execute('SELECT id FROM scenes WHERE project=? AND scene=?', (project, scene))
@@ -347,8 +410,7 @@ class AgentNotebook:
                 if color_tone: fields.append("color_tone=?"); params.append(color_tone)
                 if lighting_mood: fields.append("lighting_mood=?"); params.append(lighting_mood)
                 if characters: fields.append("characters=?"); params.append(characters)
-                if concept_url: fields.append("concept_url=?"); params.append(concept_url)
-                if status: fields.append("status=?"); params.append(status)
+                if version is not None: fields.append("version=?"); params.append(version)
 
                 if not fields:
                     return ToolResponse(content=[TextBlock(type="text", text="⚠️ 场景表未发生变更 (未传入有效字段)")])
@@ -359,11 +421,11 @@ class AgentNotebook:
                 self._execute_with_retry(self.shared_conn, sql, tuple(params))
                 return ToolResponse(content=[TextBlock(type="text", text=f"✅ 场景已更新: {scene}")])
             else:
-                sql = '''INSERT INTO scenes (project, scene, world_prompt, elements, mood, color_tone, lighting_mood, characters, concept_url, status)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
+                sql = '''INSERT INTO scenes (project, scene, world_prompt, elements, mood, color_tone, lighting_mood, characters, version)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'''
                 self._execute_with_retry(self.shared_conn, sql,
                                          (project, scene, world_prompt, elements, mood, color_tone, lighting_mood,
-                                          characters, concept_url, status))
+                                          characters, version))
                 return ToolResponse(content=[TextBlock(type="text", text=f"✅ 新场景已创建: {scene}")])
         except Exception as e:
             return ToolResponse(content=[TextBlock(type="text", text=f"❌ Error: {e}")])
@@ -390,8 +452,7 @@ class AgentNotebook:
                     f"🌈 Color Tone: {data.get('color_tone') or 'Not defined'}\n"
                     f"💡 Lighting Mood: {data.get('lighting_mood') or 'Not defined'}\n"
                     f"🧑 Characters: {data.get('characters') or 'Not defined'}\n"
-                    f"🖼️ Concept: {data.get('concept_url') or 'Not uploaded'}\n"
-                    f"📌 Status: {data.get('status') or 'unknown'}"
+                    f"🧾 Version: {('v' + str(data.get('version'))) if data.get('version') else 'unknown'}"
                 )
                 self._last_scene_query.update({"key": cache_key, "ts": now_ts, "response": info})
                 return ToolResponse(content=[TextBlock(type="text", text=info)])
@@ -702,18 +763,15 @@ class AgentNotebook:
                     lines.append(f"🎬 === 沉浸式工作台: {project} / {scene} ===")
 
                     shared.execute(
-                        "SELECT world_prompt, elements, characters, concept_url, status FROM scenes WHERE project=? AND scene=?",
+                        "SELECT world_prompt, elements, characters, version FROM scenes WHERE project=? AND scene=?",
                         (project, scene))
                     row = shared.fetchone()
                     if row:
-                        status_icon = "🟢" if row['status'] == 'confirmed' else "📝"
-                        lines.append(f"\n[场景设定 {status_icon}]")
-                        lines.append(f"- 状态: {row['status']}")
+                        lines.append("\n[场景设定]")
+                        lines.append(f"- 版本: {('v' + str(row['version'])) if row['version'] else '(未设定)'}")
                         lines.append(f"- 核心元素: {row['elements'] or '(未设定)'}")
                         lines.append(f"- 在场角色: {row['characters'] or '(未设定)'}")
                         lines.append(f"- 世界观Prompt: {row['world_prompt'][:100]}..." if row['world_prompt'] else "- 世界观Prompt: (空)")
-                        if row['concept_url']:
-                            lines.append("- 概念图: 已上传 OSS")
                     else:
                         lines.append("\n[场景设定] ⚠️ 尚未初始化 (请调用 save_scene 创建)")
 
@@ -738,13 +796,14 @@ class AgentNotebook:
 
                 elif project:
                     lines.append(f"🚀 === 项目概览: {project} ===")
-                    shared.execute("SELECT scene, status, updated_at FROM scenes WHERE project=? ORDER BY scene ASC",
+                    shared.execute("SELECT scene, version, updated_at FROM scenes WHERE project=? ORDER BY scene ASC",
                                    (project,))
                     scene_rows = shared.fetchall()
                     lines.append("\n[场次列表 Scene List]")
                     if scene_rows:
                         for r in scene_rows:
-                            lines.append(f"- {r['scene']} ({r['status']}) - Last Update: {r['updated_at'][:16]}")
+                            ver = f"v{r['version']}" if r['version'] else "未设定"
+                            lines.append(f"- {r['scene']} ({ver}) - Last Update: {r['updated_at'][:16]}")
                     else:
                         lines.append("(该项目暂无场次，请调用 save_scene 初始化)")
 

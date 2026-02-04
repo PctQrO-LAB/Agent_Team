@@ -4,7 +4,7 @@
     "model_name": "qwen3-vl-plus",
     "api_key_env": "DASHSCOPE_API_KEY",
     "generate_args": {
-      "temperature": 0.1
+      "temperature": 0.0
     },
     "stream": false
   }

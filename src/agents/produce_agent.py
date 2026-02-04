@@ -5,10 +5,10 @@ from typing import Optional, Dict
 # AgentScope
 from agentscope.agent import ReActAgent
 from agentscope.tool import Toolkit
-from agentscope.model import DashScopeChatModel
+from agentscope.model import OpenAIChatModel, DashScopeChatModel
 from agentscope.memory import InMemoryMemory, Mem0LongTermMemory
-from agentscope.embedding import DashScopeTextEmbedding
-from agentscope.formatter import DashScopeChatFormatter
+from agentscope.embedding import OpenAITextEmbedding, DashScopeTextEmbedding
+from agentscope.formatter import OpenAIChatFormatter
 from agentscope.message import Msg
 
 # Core & Tools
@@ -36,16 +36,16 @@ class ProduceAgent(ReActAgent):
 
     def __init__(self, name: str, toolkit: Toolkit, memory: Mem0LongTermMemory, sys_prompt: str = "", api_key: str = None):
         # 1. 加载模型 (Qwen3-VL)
-        config_args = load_model_config("qwen3-vl_config", override_api_key=api_key)
+        config_args = load_model_config("gemini_config", override_api_key=api_key)
         config_args.pop("config_name", None)
-        model_instance = DashScopeChatModel(**config_args)
+        model_instance = OpenAIChatModel(**config_args)
         sys_prompt = PRODUCER_SYSTEM_PROMPT
 
         super().__init__(
             name=name,
             sys_prompt=sys_prompt,
             model=model_instance,
-            formatter=DashScopeChatFormatter(),
+            formatter=OpenAIChatFormatter(),
             toolkit=toolkit,
             memory=InMemoryMemory(),
             long_term_memory=None,

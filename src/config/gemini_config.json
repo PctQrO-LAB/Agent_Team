@@ -1,0 +1,15 @@
+
+[
+  {
+    "config_name": "gemini_config",
+    "model_name": "gemini-3-pro-all",
+    "api_key_env": "GEMINI_API_KEY",
+    "client_kwargs": {
+      "base_url": "https://api.zhangsan.cool/v1"
+    },
+    "generate_args": {
+      "temperature": 0.1
+    },
+    "stream": false
+  }
+]
