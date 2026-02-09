@@ -321,6 +321,80 @@ class AgentNotebook:
 
         return "\n".join(prompt_lines)
 
+    def read_note(self, table_name: str, limit: int = 5, filter_conditions: dict = None) -> ToolResponse:
+        """读取表中最近记录。"""
+        try:
+            conn, cursor = self._get_conn_and_cursor(table_name)
+            if not cursor:
+                return ToolResponse(content=[TextBlock(type="text", text=f"❌ 错误：表 '{table_name}' 不存在。")])
+
+            sql = f"SELECT * FROM {table_name}"
+            params = []
+            if filter_conditions:
+                clauses = []
+                for k, v in filter_conditions.items():
+                    clauses.append(f"{k} = ?")
+                    params.append(v)
+                if clauses:
+                    sql += " WHERE " + " AND ".join(clauses)
+
+            sql += " ORDER BY id DESC LIMIT ?"
+            params.append(int(limit))
+
+            cursor.execute(sql, tuple(params))
+            rows = cursor.fetchall()
+            if not rows:
+                return ToolResponse(content=[TextBlock(type="text", text=f"📭 表 '{table_name}' 无可读记录。")])
+
+            result_list = [dict(row) for row in rows]
+            json_result = json.dumps(result_list, ensure_ascii=False, indent=2)
+            return ToolResponse(content=[TextBlock(type="text", text=f"✅ 读取结果 ({len(rows)} 条):\n{json_result}")])
+        except Exception as e:
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ 读取异常: {str(e)}")])
+
+    def save_to_note(self, table_name: str, data: dict) -> ToolResponse:
+        """保存记录到指定表。"""
+        return self.save_schedule(table_name, data)
+
+    def query_note(self, table_name: str, filter_conditions: dict = None) -> ToolResponse:
+        """查询指定表。"""
+        return self.execute_sql_query(table_name, filter_conditions)
+
+    def delete_from_note(self, table_name: str, conditions: dict) -> ToolResponse:
+        """从表中删除记录。"""
+        return self.delete_schedule(table_name, conditions)
+
+    def update_project_status(self, name: str, progress: str) -> ToolResponse:
+        """更新项目进度。"""
+        return self.save_project(name, progress)
+
+    def get_latest_version(self, project: str, scene: str, shot: str) -> int:
+        """获取指定镜头的最新版本号。"""
+        cursor = self.shared_conn.cursor()
+        cursor.execute('''
+            SELECT MAX(version) AS max_ver
+            FROM production_assets
+            WHERE project=? AND scene=? AND shot=?
+        ''', (project, scene, shot))
+        row = cursor.fetchone()
+        if not row or row[0] is None:
+            return 0
+        try:
+            return int(row[0])
+        except Exception:
+            return 0
+
+    def register_asset(self, project: str, scene: str, shot: str, prompt_path: str, version: int) -> ToolResponse:
+        """登记资产到 production_assets。"""
+        return self.save_shot(
+            project=project,
+            scene=scene,
+            shot=shot,
+            version=version,
+            prompt_file_path=prompt_path,
+            status="planning",
+        )
+
     def save_schedule(self, table_name: str, data: dict) -> ToolResponse:
         try:
             conn, cursor = self._get_conn_and_cursor(table_name)
