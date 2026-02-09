@@ -1,11 +1,12 @@
 import json
 import os
 
-def load_model_config(config_name: str):
+
+def load_model_config(config_name: str, override_api_key: str = None) -> dict:
     """
-    读取配置文件并返回模型对象参数 (容错增强版)
+    加载模型配置，支持动态覆盖 API Key，并确保返回字典格式。
     """
-    # 1. 找文件 (自动补全 .json)
+    # === 原有逻辑：找文件 ===
     current_dir = os.path.dirname(os.path.abspath(__file__))
     file_name = f"{config_name}.json" if not config_name.endswith(".json") else config_name
     config_path = os.path.join(current_dir, "../config", file_name)
@@ -13,12 +14,51 @@ def load_model_config(config_name: str):
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"❌ 找不到配置文件: {config_path}")
 
-    # 2. 读配置
+    # === 原有逻辑：读 JSON ===
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except json.JSONDecodeError:
         raise ValueError(f"❌ 配置文件格式错误: {config_path}")
+
+    # === 🔥 关键修复：确保拿到的是 Dict (解决 pop 报错) ===
+    target_config = None
+    if isinstance(data, list):
+        # 如果是列表，取第一个匹配 config_name 的，或者直接取第一个
+        target_config = next((c for c in data if c.get("config_name") == config_name), None)
+        if not target_config and data:
+            target_config = data[0]
+    elif isinstance(data, dict):
+        target_config = data
+
+    if not target_config:
+        raise ValueError(f"❌ 配置文件 {file_name} 解析为空！")
+
+    # === 🔥 新增逻辑：API Key 覆盖策略 ===
+    # 优先级：传入参数 > 环境变量 (config里配的key名) > Config里的死值
+
+    final_api_key = override_api_key  # 1. 先看有没有传参
+
+    if not final_api_key:
+        # 2. 没传参，去查环境变量
+        env_key = target_config.get("api_key_env")
+        if env_key:
+            final_api_key = os.environ.get(env_key)
+
+    if not final_api_key:
+        # 3. 还没找到，用 config 里的硬编码
+        final_api_key = target_config.get("api_key")
+
+    # === 原有逻辑：组装返回 ===
+    # 注意：这里我们修改了 api_key 的取值来源
+    return {
+        "config_name": target_config.get("config_name", config_name),
+        "model_name": target_config.get("model_name"),
+        "api_key": final_api_key,  # <--- 使用计算出的最终 Key
+        "client_kwargs": target_config.get("client_kwargs", {}),
+        "generate_args": target_config.get("generate_args", {}),
+        "stream": target_config.get("stream", False)
+    }
 
     # 3. 🔥 智能解析 (核心修改点)
     # 不再强制要求 config_name 必须匹配，只要有数据就行

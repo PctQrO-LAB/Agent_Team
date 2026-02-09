@@ -1,0 +1,11 @@
+[
+  {
+    "config_name": "qwen3-vl_config",
+    "model_name": "qwen3-vl-plus",
+    "api_key_env": "DASHSCOPE_API_KEY",
+    "generate_args": {
+      "temperature": 0.0
+    },
+    "stream": false
+  }
+]

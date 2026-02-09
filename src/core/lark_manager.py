@@ -1,136 +1,162 @@
+import os
 import json
 import logging
 import asyncio
-import threading
+import oss2
 import lark_oapi as lark
-from lark_oapi.api.im.v1 import *
-from lark_oapi.ws import Client as WebSocketClient
-from typing import Any, Optional, Tuple
+from lark_oapi.api.contact.v3 import BatchGetIdUserRequest, BatchGetIdUserRequestBody
+from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody, GetMessageResourceRequest
+from typing import Any, Union, List, Dict
 
-logger = logging.getLogger("LarkManager")
+# 设置日志格式，移除统一的 Launcher logger，改为动态获取
+logging.basicConfig(level=logging.INFO)
 
 
 class LarkManager:
     """
-    [飞书翻译器]
-    职责：
-    1. 负责与飞书服务器建立连接 (WebSocket)。
-    2. 负责把飞书的原始 Event 清洗成纯文本 (Input Translation)。
-    3. 负责把 Agent 的各种奇怪返回清洗成纯文本并发送 (Output Translation)。
+    飞书出站客户端：仅负责主动调用飞书 API（发消息、取资源、OSS 上传等）。
+    不再持有 WebSocket/事件派发；入站由 webhook 负责。
     """
 
-    def __init__(self, app_id: str, app_secret: str):
+    def __init__(self, app_id: str, app_secret: str, bot_name: str = "UnknownBot"):
         self.app_id = app_id
         self.app_secret = app_secret
-        self.message_handler = None
-        self.ws_client = None
+        self.bot_name = bot_name
+        self.message_handler = None  # 保留给 webhook 注入回调所用
 
-        # 初始化 API 客户端 (用于发消息)
+        self.logger = logging.getLogger(f"Lark_{bot_name}")
+
+        # --- OSS 初始化 ---
+        self.oss_bucket_name = os.environ.get("OSS_BUCKET_NAME")
+        self.oss_endpoint = os.environ.get("OSS_ENDPOINT")
+        self.oss_key_id = os.environ.get("OSS_ACCESS_KEY_ID")
+        self.oss_key_secret = os.environ.get("OSS_ACCESS_KEY_SECRET")
+
+        self.bucket = None
+        if self.oss_key_id and self.oss_key_secret:
+            try:
+                auth = oss2.Auth(self.oss_key_id, self.oss_key_secret)
+                self.bucket = oss2.Bucket(auth, self.oss_endpoint, self.oss_bucket_name)
+                self.logger.info("☁️ [Init] OSS 服务已连接")
+            except Exception as e:
+                self.logger.error(f"❌ [Init] OSS 连接失败: {e}")
+
+        # --- HTTP Client ---
         self.api_client = lark.Client.builder() \
             .app_id(app_id).app_secret(app_secret).log_level(lark.LogLevel.INFO).build()
+        self._cached_open_id = None
 
-        # 初始化 WebSocket 客户端 (用于收消息)
-        self.event_dispatcher = lark.EventDispatcherHandler.builder("", "") \
-            .register_p2_im_message_receive_v1(self._on_ws_message) \
-            .build()
+    def _resolve_user_open_id(self) -> str | None:
+        if self._cached_open_id:
+            return self._cached_open_id
 
-        self.ws_client = WebSocketClient(
-            app_id, app_secret, event_handler=self.event_dispatcher, log_level=lark.LogLevel.INFO
-        )
-
-    # ==========================
-    # 1. 输入清洗 (Event -> Text)
-    # ==========================
-    def _on_ws_message(self, data: P2ImMessageReceiveV1) -> None:
-        """WebSocket 收到消息的回调"""
-        if not self.message_handler: return
+        user_email = os.environ.get("USER_EMAIL")
+        user_mobile = os.environ.get("USER_MOBILE")
+        if not user_email and not user_mobile:
+            return os.environ.get("USER_OPEN_ID")
 
         try:
-            event = data.event
-            message = event.message
-            content_json = json.loads(message.content)
+            body_builder = BatchGetIdUserRequestBody.builder()
+            if user_email:
+                body_builder.emails([user_email])
+            if user_mobile:
+                body_builder.mobiles([user_mobile])
+            body = body_builder.build()
 
-            # A. 提取基础信息
-            raw_text = content_json.get("text", "").strip()
-            sender_id = event.sender.sender_id.open_id
-            chat_id = message.chat_id
+            req = BatchGetIdUserRequest.builder() \
+                .user_id_type("open_id") \
+                .request_body(body) \
+                .build()
 
-            # B. 群聊 @ 清洗
-            if message.chat_type == "group":
-                mentions = getattr(message, "mentions", [])
-                # 如果没 @ 机器人，或者是全员 @，都不理
-                if not mentions: return
-
-                # 把 "@机器人" 这个字符串从文本里抠掉
-                for mention in mentions:
-                    if mention.key:
-                        raw_text = raw_text.replace(mention.key, "").strip()
-
-            # C. 丢给业务层 (Agent)
-            # 注意：这里我们使用了 asyncio.run_coroutine_threadsafe 跨线程调用
-            loop = asyncio.get_event_loop()
-            asyncio.run_coroutine_threadsafe(
-                self.message_handler(raw_text, sender_id, chat_id), loop
-            )
-
+            resp = self.api_client.contact.v3.user.batch_get_id(req)
+            if resp.success() and resp.data and resp.data.user_list:
+                open_id = resp.data.user_list[0].user_id
+                self._cached_open_id = open_id
+                return open_id
         except Exception as e:
-            logger.error(f"❌ 消息解析失败: {e}")
+            self.logger.error(f"❌ OpenID resolve failed: {e}")
 
-    # ==========================
-    # 2. 输出清洗 (Any -> Card/Text)
-    # ==========================
-    async def reply(self, chat_id: str, agent_response: Any):
-        """
-        [对外接口] 发送回复。会自动清洗 AgentScope 的复杂返回格式。
-        """
-        # A. 清洗 AgentScope 的 Response
-        clean_text = ""
-        if agent_response is None:
-            clean_text = "🤖 (无内容)"
-        elif isinstance(agent_response, str):
-            clean_text = agent_response
-        elif isinstance(agent_response, list):
-            # 提取 list 里所有的 text 字段
-            texts = [item.get('text', '') for item in agent_response
-                     if isinstance(item, dict) and item.get('type') == 'text']
-            clean_text = "\n".join(texts)
-            if not clean_text: clean_text = str(agent_response)  # 兜底
-        else:
-            clean_text = str(agent_response)
-
-        # B. 发送
-        if clean_text:
-            await self._send_lark_card(chat_id, clean_text)
-
-    async def _send_lark_card(self, receive_id: str, text: str):
-        """底层发送实现"""
-        # 自动判断 ID 类型：如果是 ou_ 开头则是 open_id，如果是 oc_ 开头则是 chat_id
-        id_type = "open_id" if receive_id.startswith("ou_") else "chat_id"
-
-        card_content = {
-            "config": {"wide_screen_mode": True},
-            "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": text}}]
-        }
-        req = CreateMessageRequest.builder() \
-            .receive_id_type(id_type) \
-            .request_body(CreateMessageRequestBody.builder()
-                          .receive_id(receive_id).msg_type("interactive")
-                          .content(json.dumps(card_content)).build()) \
-            .build()
-
-        # 异步调用
-        resp = await asyncio.to_thread(lambda: self.api_client.im.v1.message.create(req))
-        if not resp.success():
-            logger.error(f"❌ 发送失败: {resp.code} - {resp.msg}")
-
-    # ==========================
-    # 3. 生命周期管理
-    # ==========================
-    def bind_handler(self, async_func):
-        """绑定收到消息后的处理函数"""
-        self.message_handler = async_func
+        return os.environ.get("USER_OPEN_ID")
 
     def start(self):
-        """启动监听"""
-        t = threading.Thread(target=self.ws_client.start, daemon=True)
-        t.start()
+        """Webhook 模式下无需启动任何长连接，保留接口作兼容。"""
+        self.logger.info("ℹ️ Webhook 模式：LarkManager 不再启动 WebSocket，只负责出站调用")
+
+    def _process_image_stream(self, message_id, image_key):
+        if not self.bucket:
+            return None
+        try:
+            req = GetMessageResourceRequest.builder() \
+                .message_id(message_id).file_key(image_key).type("image").build()
+            resp = self.api_client.im.v1.message_resource.get(req)
+            if not resp.success():
+                return None
+
+            object_name = f"agent_images/{message_id}_{image_key}.jpg"
+            self.bucket.put_object(object_name, resp.file)
+            return self.bucket.sign_url('GET', object_name, 3600)
+        except Exception as e:
+            self.logger.error(f"OSS Error: {e}")
+            return None
+
+    def _create_image_block(self, message_id, image_key):
+        url = self._process_image_stream(message_id, image_key)
+        if url:
+            return {"type": "image", "source": {"type": "url", "url": url}}
+        return None
+
+    def _parse_post_content(self, content_json, message_id):
+        msg_content = []
+        try:
+            for lines in content_json.get("content", []):
+                for elem in lines:
+                    if elem["tag"] == "text":
+                        text = elem.get("text", "").strip()
+                        if text: msg_content.append({"type": "text", "text": text})
+                    elif elem["tag"] == "img":
+                        image_key = elem.get("image_key")
+                        oss_url = self._process_image_stream(message_id, image_key)
+                        if oss_url:
+                            msg_content.append({"type": "image", "source": {"type": "url", "url": oss_url}})
+                        else:
+                            msg_content.append({"type": "text", "text": "[Image Failed]"})
+        except Exception:
+            return [{"type": "text", "text": "[Post Error]"}]
+        return msg_content if msg_content else [{"type": "text", "text": "[Empty Post]"}]
+
+    async def reply(self, receive_id, response, receive_id_type: str = "chat_id"):
+        clean_text = ""
+        if isinstance(response, str):
+            clean_text = response
+        elif isinstance(response, list):
+            clean_text = "\n".join([b.get("text", "") for b in response if b.get("type") == "text"])
+        elif hasattr(response, 'text'):
+            clean_text = response.text
+        else:
+            clean_text = str(response)
+
+        if isinstance(receive_id, str) and receive_id.startswith("n8n:"):
+            fallback_open_id = self._resolve_user_open_id()
+            if fallback_open_id:
+                receive_id = fallback_open_id
+                receive_id_type = "open_id"
+            else:
+                self.logger.error("❌ No USER_OPEN_ID/USER_EMAIL/USER_MOBILE configured.")
+                return
+
+        card = {"config": {"wide_screen_mode": True},
+                "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": clean_text}}]}
+        req = CreateMessageRequest.builder().receive_id_type(receive_id_type) \
+            .request_body(CreateMessageRequestBody.builder().receive_id(receive_id).msg_type("interactive")
+                          .content(json.dumps(card)).build()).build()
+
+        # 增加回复的错误捕获
+        try:
+            resp = await asyncio.to_thread(lambda: self.api_client.im.v1.message.create(req))
+            if not resp.success():
+                self.logger.error(f"❌ 回复失败: code={resp.code}, msg={resp.msg}")
+        except Exception as e:
+            self.logger.error(f"❌ 回复异常: {e}")
+
+    def bind_handler(self, func):
+        self.message_handler = func
