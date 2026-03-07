@@ -154,8 +154,7 @@ class AgentNotebook:
                            color_tone    TEXT,
                            lighting_mood TEXT,
                            characters    TEXT,
-                           image_path    TEXT,
-                           file_path     TEXT,
+                           
                            version       INTEGER,
                            created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                            updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -198,8 +197,8 @@ class AgentNotebook:
 
         self._migrate_scenes_table()
         self._migrate_design_assets_table()
-        self._migrate_scenes_image_path()
-        self._migrate_scenes_file_path()
+        # self._migrate_scenes_image_path()  # Removed for Direction A
+        # self._migrate_scenes_file_path()  # Removed for Direction A
         self._migrate_shots_status()
     
     def _migrate_shots_status(self):
