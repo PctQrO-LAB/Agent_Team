@@ -39,3 +39,11 @@ description: 通过 n8n Webhook 委托生成图片/触发工作流
 ## 注意事项
 - 目前未默认附带签名/Token；若 n8n 开启验证，请在 GenerationTool 中加入对应 Header 或在网关层校验。
 - 确保 target_path 合规，避免注入非法路径或越权目录。
+
+
+## 📌 特别工作流 (Important Workflow)
+在保存概念图和读取时：
+你需要知道文本设定和物理美术资产是分离的：
+- `save_scene` 和 `get_scene` **只负责**保存和检索场景的世界观和文本设定。它们没有物理图片路径，不能存图或找图！
+- 物理图片资产（尤其是大场景概念图）必须使用 `save_design_asset` 保存，并且将 `category` 设为 `'en'` (环境)。
+- 当你需要查找已经生成的场景概念图时，**必须**使用 `query_design_assets(project, category='en')`，或者直接 `get_design_asset(project, category='en', name='pXX-scXX-enXX')`！

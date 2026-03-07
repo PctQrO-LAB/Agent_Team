@@ -38,3 +38,11 @@ description: 管理影视项目、场景、镜头和设计资产的技能
 - 场景概念(Environment): `p01-sc01-en01`
 - 道具(Prop): `p01-sc01-pr01`
 - 如果不确定要创建的编号是多少，在调用保存工具时将其设为 None 或只提供前缀，交由后台自动分配并仔细记录返回的最终 ID。
+
+
+## 📌 特别工作流 (Important Workflow)
+在保存概念图和读取时：
+你需要知道文本设定和物理美术资产是分离的：
+- `save_scene` 和 `get_scene` **只负责**保存和检索场景的世界观和文本设定。它们没有物理图片路径，不能存图或找图！
+- 物理图片资产（尤其是大场景概念图）必须使用 `save_design_asset` 保存，并且将 `category` 设为 `'en'` (环境)。
+- 当你需要查找已经生成的场景概念图时，**必须**使用 `query_design_assets(project, category='en')`，或者直接 `get_design_asset(project, category='en', name='pXX-scXX-enXX')`！
