@@ -4,10 +4,10 @@ from typing import Optional, Dict
 
 from agentscope.agent import ReActAgent
 from agentscope.tool import Toolkit
-from agentscope.model import DashScopeChatModel
+from agentscope.model import GeminiChatModel
 from agentscope.memory import InMemoryMemory, Mem0LongTermMemory
 from agentscope.embedding import DashScopeTextEmbedding
-from agentscope.formatter import DashScopeChatFormatter
+from agentscope.formatter import GeminiChatFormatter
 from agentscope.message import Msg
 
 from src.core.load_model import load_model_config
@@ -16,6 +16,7 @@ from src.core.skill_loader import register_agent_skills
 from src.tools.note_tools import AgentNotebook
 from src.tools.file_tools import FileTool
 from src.tools.generate_tools import GenerationTool
+from src.tools.lark_drive_tools import LarkDriveTool
 
 from src.config.prompts import STORYBOARD_SYSTEM_PROMPT
 from src.utils.message_utils import normalize_message_content
@@ -33,17 +34,17 @@ class StoryboardAgent(ReActAgent):
     """
 
     def __init__(self, name: str, toolkit: Toolkit, memory: Mem0LongTermMemory, sys_prompt: str = "", api_key: str = None):
-        # 1. 加载模型 (Qwen3-VL)
-        config_args = load_model_config("qwen3-vl_config", override_api_key=api_key)
+        # 1. 加载模型 (Gemini)
+        config_args = load_model_config("gemini_config", override_api_key=api_key)
         config_args.pop("config_name", None)
-        model_instance = DashScopeChatModel(**config_args)
+        model_instance = GeminiChatModel(**config_args)
         sys_prompt = STORYBOARD_SYSTEM_PROMPT
 
         super().__init__(
             name=name,
             sys_prompt=sys_prompt,
             model=model_instance,
-            formatter=DashScopeChatFormatter(),
+            formatter=GeminiChatFormatter(),
             toolkit=toolkit,
             memory=InMemoryMemory(),
             long_term_memory=None,
@@ -128,24 +129,29 @@ class StoryboardAgent(ReActAgent):
         note_tool = AgentNotebook(agent_name="StoryboardAgent")
         fs_tool = FileTool()
         gen_tool = GenerationTool()
+        drive_tool = LarkDriveTool(app_id, app_secret)
 
         toolkit = Toolkit()
         tools_list = [
-            fs_tool.init_shot_structure,  # 建分镜目录
-
-            # 核心：存镜头
-            note_tool.save_shot,
-            note_tool.get_shot,
-
             # 核心：读素材 (只读不写)
             note_tool.get_scene,  # 读环境
             note_tool.get_design_asset,  # 读人设 (会自动触发OSS桥接)
+
+            # 飞书云盘 (查资料)
+            drive_tool.list_files_in_folder,
+            drive_tool.read_document_content,
+
+            # 核心：批量写
+            note_tool.save_beat_list, # 批量写节拍
+            note_tool.save_beat,      # 单个写节拍 (可选)
+            note_tool.save_shot_batch, # 批量写镜头
+            note_tool.save_shot,       # 单个写镜头
 
             # 杂项
             note_tool.save_memento,
             note_tool.get_dashboard,
             fs_tool.read_image_as_url,  # 看本地参考图
-            gen_tool.generate_image  # 生图
+            gen_tool.generate_storyboard_batch, # 批量生成分镜
         ]
         for t in tools_list: toolkit.register_tool_function(t)
 
@@ -153,15 +159,17 @@ class StoryboardAgent(ReActAgent):
             "skills/film_notebook",
             "skills/memory_notebook",
             "skills/file_tools",
+            "skills/drive_lark",
             "skills/generate_tools"
         ])
 
         dashscope_key = os.environ.get("EMBEDDING_API_KEY")
         embedding_model = DashScopeTextEmbedding(model_name="text-embedding-v2", api_key=dashscope_key)
 
-        llm_config = load_model_config("qwen3-vl_config", override_api_key=specific_api_key)
+        # Mem0 内置模型也跟随主模型切换到 Gemini
+        llm_config = load_model_config("gemini_config", override_api_key=specific_api_key)
         llm_config.pop("config_name", None)
-        mem0_llm = DashScopeChatModel(**llm_config)
+        mem0_llm = GeminiChatModel(**llm_config)
 
         # 独立的 Memory 路径
         db_path = "/app/data/mem0_storyboard_db"

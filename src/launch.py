@@ -7,11 +7,16 @@ from dotenv import load_dotenv
 # 添加项目根目录到 Python 路径，这样 'from src.xxx' 的导入才能工作
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# 0. Apply Patches
+from src.core.patch import apply_patches
+apply_patches()
+
 from agents.schedule_agent import ScheduleAgent
 from agents.concept_agent import ConceptAgent
 from agents.storyboard_agent import StoryboardAgent
 from agents.produce_agent import ProduceAgent
 from agents.design_agent import DesignAgent
+from agents.assistant_agent import AssistantAgent
 
 from core.webhook_server import build_webhook_app, start_webhook_server
 from core.agent_relay import AgentRelay
@@ -61,7 +66,12 @@ async def main():
     if storyboard_pack:
         services.append(storyboard_pack)
 
-    # 5. 尝试组装 StoryboardAgent (新增)
+    # 6. 尝试组装 AssistantAgent (新增)
+    assistant_pack = AssistantAgent.build_from_env()
+    if assistant_pack:
+        services.append(assistant_pack)
+
+    # 7. 尝试组装 ProduceAgent (新增)
     produce_pack = ProduceAgent.build_from_env()
     if produce_pack:
         services.append(produce_pack)
@@ -94,6 +104,7 @@ async def main():
             "DesignAgent": "DESIGN",
             "ConceptAgent": "CONCEPT",
             "StoryboardAgent": "STORYBOARD",
+            "AssistantAgent": "ASSISTANT",
             "ProduceAgent": "PRODUCE",
         }
 

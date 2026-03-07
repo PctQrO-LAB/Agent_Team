@@ -1,33 +1,30 @@
 ---
 name: drive_lark
-description: 使用飞书云盘进行文件存取与列举的技能
+description: 飞书云盘基础技能（精简版）
 ---
 
 # 飞书云盘技能
 
 ## 作用
-- 上传文件到飞书云盘
-- 读取云盘文件为 base64
-- 列举文件夹内容
-- （可选）从消息下载图片到本地后再上传
+- 获取项目专属文件夹下的文件清单（包含文档名称、Token 和 URL）
+- **读取在线文档 (docx) 的纯文本内容**。支持直接传入文档 Token 或完整的飞书云文档 URL。
 
-## 依赖工具函数（LarkToolset）
-- upload_file
-- read_file_base64
-- list_folder_files
-- download_message_image（如需从消息取图）
-- extract_token_from_url（解析分享链接 token）
+## 依赖工具函数
+- list_files_in_folder: 获取硬编码的项目文件夹内的文件列表。无需参数。
+- read_document_content: 读取指定的 docx 文档内容。参数 `document_id` 可以是文档 Token 或 URL。
 
 ## 使用说明
-1) 上传前确认文件本地路径和目标 folder_token。
-2) 读取/列举时需要有效的 file_token 或 folder_token。
-3) 大文件操作时先提示用户可能的耗时与大小限制。
+1) 当用户询问项目文档、资料或查看云盘文件时，首先调用 `list_files_in_folder` 查看有哪些文件。
+2) 从列表中获取感兴趣的文档 Token 或 URL。
+3) 使用 `read_document_content` 读取该文档的具体内容。
+4) **注意**：该工具只支持读取新版文档 (docx)，不支持旧版 (doc) 或表格 (sheet)。
 
 ## 输出格式示例
-- "已上传文件：<文件名>，folder=<folder_token>"
-- "文件列表：<名称/类型/大小>..."
-- "已读取文件为 base64（长度 N）"
+- "📂 文件夹内容 (Ygpuf...):"
+- "- [docx] 需求文档 (Token: xxx) URL: ..."
+- "云文档\n多人实时协同，插入一切元素..." (文档内容)
 
 ## 注意事项
-- 不要泄露访问密钥；仅返回必要的 token/路径。
-- 对用户提供的分享链接，先用 extract_token_from_url 提取 token 再操作。
+- 文件夹 ID 是预设的，Agent 无法更改查询目录。
+- 读取内容时，如果输入是 URL，工具内部会自动提取 Token。
+

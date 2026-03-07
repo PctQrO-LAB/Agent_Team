@@ -4,11 +4,8 @@
     "config_name": "gemini_config",
     "model_name": "gemini-3-pro-preview",
     "api_key_env": "GEMINI_API_KEY",
-    "client_kwargs": {
-      "base_url": "https://poloapi.top/v1"
-    },
     "generate_args": {
-      "temperature": 0
+      "temperature": 1.0
     },
     "stream": false
   }

@@ -1,0 +1,14 @@
+
+[
+  {
+    "config_name": "doubao-seed_config",
+    "model_name": "doubao-seed-2-0-pro-260215",
+    "client_kwargs": {
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3"
+    },
+    "generate_args": {
+      "temperature": 1.5
+    },
+    "stream": false
+  }
+]

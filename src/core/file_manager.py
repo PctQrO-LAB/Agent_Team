@@ -19,7 +19,13 @@ class FileManager:
     3. 自动同步云端 (Auto-Sync to OSS).
     """
 
-    ROOT_PATH = "/app/production"
+    # 动态适配 ROOT_PATH
+    # - 生产环境 (Docker): /app/production
+    # - 开发环境: {Workspace}/data/production
+    if os.path.exists("/app/production"):
+        ROOT_PATH = "/app/production"
+    else:
+        ROOT_PATH = os.path.join(os.getcwd(), "data/production")
 
     def __init__(self):
         # --- 1. 初始化 OSS 连接 (原 MediaBridge 逻辑) ---
@@ -125,7 +131,17 @@ class FileManager:
         [核心能力] 获取文件的云端链接。
         机制：Agent 只要想看这个本地文件，我就自动把它同步到 OSS 并给出一个 URL。
         """
-        if not local_path or not os.path.exists(local_path):
+        # 1. 路径兼容性修正
+        real_path = local_path
+        # 情况A: 传入是 "app/production/..." (Agent 常产生这种相对路径)
+        if local_path.startswith("app/production"):
+             real_path = local_path.replace("app/production", self.ROOT_PATH)
+        # 情况B: 传入是 "/app/production/..." 但当前是开发环境
+        elif local_path.startswith("/app/production") and not local_path.startswith(self.ROOT_PATH):
+             real_path = local_path.replace("/app/production", self.ROOT_PATH)
+        
+        if not real_path or not os.path.exists(real_path):
+            logger.warning(f"File not found: {local_path} (Resolved to: {real_path})")
             return None
 
         if not self.bucket:
@@ -133,15 +149,16 @@ class FileManager:
             return None
 
         try:
-            # 构造 OSS Key: 去除本地绝对路径前缀
-            # /app/production/Movie/Scene/img.jpg -> assets/Movie/Scene/img.jpg
-            relative_path = local_path.replace(self.ROOT_PATH, "")
+            # 构造 OSS Key: 统一使用 production/Project/Scene... 结构
+            # 这样无论本地是在 /app/production 还是 data/production，OSS 上都一致
+            relative_path = real_path.replace(self.ROOT_PATH, "")
             if relative_path.startswith("/"): relative_path = relative_path[1:]
 
             oss_key = f"assets/{relative_path}"
 
             # 1. 上传 (覆盖式，确保最新)
-            self.bucket.put_object_from_file(oss_key, local_path)
+            self.bucket.put_object_from_file(oss_key, real_path)
+
 
             # 2. 签名 (生成临时可访问 URL)
             url = self.bucket.sign_url('GET', oss_key, 3600)

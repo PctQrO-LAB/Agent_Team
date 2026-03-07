@@ -5,10 +5,10 @@ from typing import Optional, Dict
 # AgentScope
 from agentscope.agent import ReActAgent
 from agentscope.tool import Toolkit
-from agentscope.model import DashScopeChatModel
+from agentscope.model import OpenAIChatModel
 from agentscope.memory import InMemoryMemory, Mem0LongTermMemory
 from agentscope.embedding import DashScopeTextEmbedding
-from agentscope.formatter import DashScopeChatFormatter
+from agentscope.formatter import OpenAIChatFormatter
 from agentscope.message import Msg
 
 # Core & Tools
@@ -36,17 +36,17 @@ class ConceptAgent(ReActAgent):
     """
 
     def __init__(self, name: str, toolkit: Toolkit, memory: Mem0LongTermMemory, sys_prompt: str = "", api_key: str = None):
-        # 1. 加载模型 (Qwen3-VL)
-        config_args = load_model_config("qwen3-vl_config", override_api_key=api_key)
+        # 1. 加载模型 (doubao-seed_config)
+        config_args = load_model_config("doubao-seed_config", override_api_key=api_key)
         config_args.pop("config_name", None)
-        model_instance = DashScopeChatModel(**config_args)
+        model_instance = OpenAIChatModel(**config_args)
         sys_prompt = CONCEPT_SYSTEM_PROMPT
 
         super().__init__(
             name=name,
             sys_prompt=sys_prompt,
             model=model_instance,
-            formatter=DashScopeChatFormatter(),
+            formatter=OpenAIChatFormatter(),
             toolkit=toolkit,
             memory=InMemoryMemory(),
             long_term_memory=None,
@@ -160,9 +160,9 @@ class ConceptAgent(ReActAgent):
         embedding_model = DashScopeTextEmbedding(model_name="text-embedding-v2", api_key=dashscope_key)
 
         # 记忆LLM配置
-        llm_config = load_model_config("qwen3-vl_config", override_api_key=specific_api_key)
+        llm_config = load_model_config("doubao-seed_config", override_api_key=specific_api_key)
         llm_config.pop("config_name", None)
-        mem0_llm = DashScopeChatModel(**llm_config)
+        mem0_llm = OpenAIChatModel(**llm_config)
 
         db_path = "/app/data/mem0_concept_db"
         if not os.path.exists(db_path): os.makedirs(db_path, exist_ok=True)
