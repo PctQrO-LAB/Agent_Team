@@ -175,7 +175,7 @@ class ProduceAgent(ReActAgent):
         ]
         for t in tools_list: toolkit.register_tool_function(t)
 
-        register_agent_skills(toolkit, ["skills/film_notebook", "skills/memory_notebook", "skills/plan_notebook", "skills/drive_lark", "skills/agent_relay", "skills/file_tools", "skills/generate_tools"])
+        register_agent_skills(toolkit, ["skills/film_notebook", "skills/memory_notebook", "skills/plan_notebook", "skills/drive_lark", "skills/agent_relay", "skills/file_tools"])
 
         # 2. 记忆
         dashscope_key = os.environ.get("EMBEDDING_API_KEY")
