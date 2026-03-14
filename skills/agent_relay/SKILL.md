@@ -22,6 +22,7 @@ description: 让智能体之间进行轻量级消息沟通，并可镜像到飞�
      - `DesignAgent` (视觉设计总监 / Visual Design Director): 负责项目中人物/角色与道具/非生物资产（载具、UI、物件）的视觉设计与一致性。
      - `ConceptAgent` (场景美术指导 / Concept Art Director): 负责定义大场景的世界观与环境氛围，负责给各个房间/环境画概念图。
      - `StoryboardAgent` (电影分镜师 / Storyboard Artist): 核心创作者，负责根据上游提供的角色与环境设定将剧本画成分镜。
+     - `LayoutAgent` (机位与背景美术师 / Layout & Background Artist): 专门负责读取分镜文本，提取机位需求并生成对应的场景背景图，为后期提供视觉层面的环境透视指导。
      - `AssistantAgent` (制作助理 / Production Assistant): 承接粗略分镜概念，负责撰写细致的AI生图Prompt（中英文）并在本地建场落盘。
      - `QCAgent` (品控审查助手 / QC): 专职处理N8N生图回调、图像打回与物理视觉细节筛查审核。
 

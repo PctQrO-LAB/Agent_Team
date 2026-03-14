@@ -14,6 +14,7 @@ apply_patches()
 from agents.schedule_agent import ScheduleAgent
 from agents.concept_agent import ConceptAgent
 from agents.storyboard_agent import StoryboardAgent
+from agents.layout_agent import LayoutAgent
 from agents.produce_agent import ProduceAgent
 from agents.design_agent import DesignAgent
 from agents.assistant_agent import AssistantAgent
@@ -67,6 +68,11 @@ async def main():
     if storyboard_pack:
         services.append(storyboard_pack)
 
+    # 5.5 尝试组装 LayoutAgent (新增)
+    layout_pack = LayoutAgent.build_from_env()
+    if layout_pack:
+        services.append(layout_pack)
+
     # 6. 尝试组装 AssistantAgent (新增)
     assistant_pack = AssistantAgent.build_from_env()
     if assistant_pack:
@@ -113,6 +119,7 @@ async def main():
             "DesignAgent": "DESIGN",
             "ConceptAgent": "CONCEPT",
             "StoryboardAgent": "STORYBOARD",
+            "LayoutAgent": "LAYOUT",
             "AssistantAgent": "ASSISTANT",
             "ProduceAgent": "PRODUCE",
             "QCAgent": "QC",
