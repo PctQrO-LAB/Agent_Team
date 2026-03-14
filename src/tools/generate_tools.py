@@ -337,9 +337,9 @@ class GenerationTool:
             other_design_ids: ID列表(角色/道具等 ID) 角色、道具等其他设计图路径列表。
         """
         # 1. 获取 Webhook URL
-        webhook_url = os.environ.get("N8N_SHOT_WEBHOOK_URL")
+        webhook_url = os.environ.get("N8N_SHOT_BATCH_WEBHOOK_URL")
         if not webhook_url:
-            return ToolResponse(content=[TextBlock(type="text", text="❌ Error: 环境变量 N8N_SHOT_WEBHOOK_URL 未配置。")])
+            return ToolResponse(content=[TextBlock(type="text", text="❌ Error: 环境变量 N8N_SHOT_BATCH_WEBHOOK_URL 未配置。")])
 
         # 2. 从 SQLite 读取分镜列表 和 Root Path
         shots_data = []
