@@ -115,8 +115,7 @@ class LayoutAgent(ReActAgent):
             # 读素材
             note_tool.get_scene,  
             note_tool.get_design_asset,
-            note_tool.query_design_assets,
-            note_tool.list_shots, # 读分镜
+            # note_tool.list_shots, # 读分镜（去除不存在的 list_shots）
 
             # 飞书云盘 (查资料)
             drive_tool.list_files_in_folder,

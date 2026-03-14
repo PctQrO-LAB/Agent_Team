@@ -2,7 +2,6 @@ from .assistant_agent import AssistantAgent
 from .concept_agent import ConceptAgent
 from .design_agent import DesignAgent
 from .produce_agent import ProduceAgent
-from .prompt_agent import PromptAgent
 from .qc_agent import QCAgent
 from .schedule_agent import ScheduleAgent
 from .storyboard_agent import StoryboardAgent
@@ -13,7 +12,6 @@ __all__ = [
     "ConceptAgent",
     "DesignAgent",
     "ProduceAgent",
-    "PromptAgent",
     "QCAgent",
     "ScheduleAgent",
     "StoryboardAgent",
