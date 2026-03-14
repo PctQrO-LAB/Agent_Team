@@ -58,13 +58,13 @@ class FileTool:
                     prefix = match.group(1).lower()
                     if prefix == "sc":
                         # Scene (e.g., p01-sc01)
-                        scene = f"{project}-{last_part}"
-                        path = self.manager.init_scene(project, scene)
+                        scene_uid = f"{project}-{last_part}"
+                        path = self.manager.init_scene(project, scene_uid)
                         conn = get_db()
                         cursor = conn.cursor()
-                        cursor.execute("UPDATE scenes SET file_path = ? WHERE project = ? AND scene = ?", (path, project, scene))
+                        cursor.execute("UPDATE scenes SET file_path = ? WHERE project = ? AND uid = ?", (path, project, scene_uid))
                         if cursor.rowcount == 0:
-                            cursor.execute("INSERT INTO scenes (project, scene, file_path) VALUES (?, ?, ?)", (project, scene, path))
+                            cursor.execute("INSERT INTO scenes (project, uid, file_path) VALUES (?, ?, ?)", (project, scene_uid, path))
                         conn.commit()
                         conn.close()
                         msg = f"✅ 场景场地已就绪。\\n📂 场景根目录: {path}\\n💡 【提示】概念图(Concept)生成至此专属路径: {path}/_Concept"

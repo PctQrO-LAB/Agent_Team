@@ -794,7 +794,7 @@ class AgentNotebook:
                            FROM shots
                            WHERE project = ?
                              AND scene = ?
-                             AND shot = ?
+                             AND uid = ?
                              AND version = ?
                            ''', (project, scene, shot, version))
             row = cursor.fetchone()
