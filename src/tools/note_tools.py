@@ -478,7 +478,11 @@ class AgentNotebook:
         return self.save_schedule(table_name, data)
 
     def query_note(self, table_name: str, filter_conditions: dict = None) -> ToolResponse:
-        """查询指定表。"""
+        """
+        查询指定表。
+        :param table_name: 只能是以下表名之一: "tasks", "calendars", "projects", "patterns", "resources", "shots", "scenes", "design_assets", "beat_list", "mementos", "patterns_private"
+        :param filter_conditions: 过滤条件字典
+        """
         # 直接复用 read_note，但不限制只取极少条数，使用较大 limit 查询
         return self.read_note(table_name, limit=50, filter_conditions=filter_conditions)
 
