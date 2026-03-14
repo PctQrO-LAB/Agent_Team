@@ -34,8 +34,8 @@ description: 通过 n8n Webhook 委托生成图片/触发工作流
 2) **调用参数**:
    - `project`: 项目名称。
    - `scene`: 场号。
-   - `scene_design_files`: (可选) 场景概念图/环境图的本地路径列表。
-   - `other_design_files`: (可选) 角色、道具设定图的本地路径列表。
+   - `scene_design_ids`: (可选) 场景概念图/环境图的 Asset ID 列表（系统会自动转成图片URL）。
+   - `other_design_ids`: (可选) 角色、道具设定图的 Asset ID 列表。
 3) **行为**:
    - 工具会自动从数据库抓取该场所有镜头的 prompt、镜号、描述。
    - 自动查询该场的输出根目录 (`scene_root_path`)。
