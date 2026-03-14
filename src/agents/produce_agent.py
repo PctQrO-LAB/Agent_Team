@@ -167,9 +167,6 @@ class ProduceAgent(ReActAgent):
             drive_tool.list_files_in_folder,
             drive_tool.read_document_content,
 
-            # 审核与回填
-            note_tool.save_shot,
-
             # 视觉查看
             fs_tool.read_image_as_url,
 
