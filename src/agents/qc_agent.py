@@ -18,6 +18,7 @@ from src.core.lark_manager import LarkManager
 from src.core.skill_loader import register_agent_skills
 from src.tools.note_tools import AgentNotebook
 from src.tools.file_tools import FileTool
+from src.tools.lark_drive_tools import LarkDriveTool
 from src.utils.message_utils import normalize_message_content
 from src.config.prompts import QC_SYSTEM_PROMPT
 
@@ -134,6 +135,7 @@ class QCAgent(ReActAgent):
         # 1. 工具
         note_tool = AgentNotebook(agent_name="QCAgent")
         fs_tool = FileTool()
+        drive_tool = LarkDriveTool(app_id, app_secret)
 
         toolkit = Toolkit()
         tools_list = [
@@ -149,12 +151,16 @@ class QCAgent(ReActAgent):
             # 视觉查看
             fs_tool.read_image_as_url,
 
+            # 飞书云盘 (查剧本)
+            drive_tool.list_files_in_folder,
+            drive_tool.read_document_content,
+
             # 备忘
             note_tool.save_memento,
         ]
         for t in tools_list: toolkit.register_tool_function(t)
 
-        register_agent_skills(toolkit, ["skills/memory_notebook", "skills/plan_notebook", "skills/agent_relay", "skills/file_tools", "skills/generate_tools"])
+        register_agent_skills(toolkit, ["skills/memory_notebook", "skills/plan_notebook", "skills/agent_relay", "skills/drive_lark", "skills/file_tools", "skills/generate_tools"])
 
         # 2. 记忆
         dashscope_key = os.environ.get("EMBEDDING_API_KEY")
