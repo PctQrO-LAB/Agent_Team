@@ -9,6 +9,7 @@ from agentscope.memory import InMemoryMemory, Mem0LongTermMemory
 from agentscope.embedding import DashScopeTextEmbedding
 from agentscope.formatter import DashScopeChatFormatter
 from agentscope.message import Msg
+from agentscope.plan import PlanNotebook
 
 from src.core.load_model import load_model_config
 from src.core.lark_manager import LarkManager
@@ -39,6 +40,7 @@ class AssistantAgent(ReActAgent):
         model_instance = DashScopeChatModel(**config_args)
         
         use_prompt = sys_prompt if sys_prompt else ASSISTANT_SYSTEM_PROMPT
+        plan_notebook = PlanNotebook()
 
         super().__init__(
             name=name,
@@ -50,10 +52,12 @@ class AssistantAgent(ReActAgent):
             long_term_memory=None,
             long_term_memory_mode="agent_control",
             max_iters=15,
+            plan_notebook=plan_notebook,
         )
 
         self.manager: Optional[LarkManager] = None
         self.current_chat_id: Optional[str] = None
+        self.plan_notebook = plan_notebook
 
         self.register_instance_hook(
             hook_type="pre_acting",
@@ -154,9 +158,10 @@ class AssistantAgent(ReActAgent):
         register_agent_skills(toolkit, [
             "skills/film_notebook",
             "skills/memory_notebook",
+            "skills/plan_notebook",
             "skills/file_tools",
             "skills/drive_lark",
-            # "skills/generate_tools" # Unlink generate tools as per request to focus on storage/prompt
+            "skills/generate_tools" # Re-enable generate tools mapping as requested
         ])
 
         dashscope_key = os.environ.get("EMBEDDING_API_KEY")

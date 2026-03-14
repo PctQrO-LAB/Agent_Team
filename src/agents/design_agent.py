@@ -9,6 +9,7 @@ from agentscope.memory import InMemoryMemory, Mem0LongTermMemory
 from agentscope.embedding import DashScopeTextEmbedding
 from agentscope.formatter import OpenAIChatFormatter
 from agentscope.message import Msg
+from agentscope.plan import PlanNotebook
 
 from src.core.load_model import load_model_config
 from src.core.lark_manager import LarkManager
@@ -49,6 +50,7 @@ class DesignAgent(ReActAgent):
 
         # ✨ 使用统一的视觉设计 System Prompt
         sys_prompt = DESIGN_SYSTEM_PROMPT
+        plan_notebook = PlanNotebook()
 
         super().__init__(
             name=name,
@@ -60,10 +62,12 @@ class DesignAgent(ReActAgent):
             long_term_memory=None,
             long_term_memory_mode="agent_control",
             max_iters=15,
+            plan_notebook=plan_notebook,
         )
 
         self.manager: Optional[LarkManager] = None
         self.current_chat_id: Optional[str] = None
+        self.plan_notebook = plan_notebook
 
         self.register_instance_hook(
             hook_type="pre_acting",
@@ -172,6 +176,7 @@ class DesignAgent(ReActAgent):
         register_agent_skills(toolkit, [
             "skills/film_notebook",
             "skills/memory_notebook",
+            "skills/plan_notebook",
             "skills/file_tools",
             "skills/generate_tools"
         ])

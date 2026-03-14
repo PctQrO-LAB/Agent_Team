@@ -479,7 +479,8 @@ class AgentNotebook:
 
     def query_note(self, table_name: str, filter_conditions: dict = None) -> ToolResponse:
         """查询指定表。"""
-        return self.execute_sql_query(table_name, filter_conditions)
+        # 直接复用 read_note，但不限制只取极少条数，使用较大 limit 查询
+        return self.read_note(table_name, limit=50, filter_conditions=filter_conditions)
 
     def delete_from_note(self, table_name: str, conditions: dict) -> ToolResponse:
         """从表中删除记录。"""
@@ -495,7 +496,7 @@ class AgentNotebook:
         cursor.execute('''
             SELECT MAX(version) AS max_ver
             FROM shots
-            WHERE project=? AND scene=? AND shot=?
+            WHERE project=? AND uid=? AND shot=?
         ''', (project, scene, shot))
         row = cursor.fetchone()
         if not row or row[0] is None:
@@ -596,11 +597,11 @@ class AgentNotebook:
         import re
         prefix_str = f"{project}-sc"
         if not scene or not re.match(rf"^{prefix_str}\d+$", scene):
-            scene = self._generate_next_id(self.shared_conn, 'scenes', 'scene', prefix_str)
+            scene = self._generate_next_id(self.shared_conn, 'scenes', 'uid', prefix_str)
 
         try:
             cursor = self.shared_conn.cursor()
-            cursor.execute('SELECT id FROM scenes WHERE project=? AND scene=?', (project, scene))
+            cursor.execute('SELECT id FROM scenes WHERE project=? AND uid=?', (project, scene))
             row = cursor.fetchone()
 
             if row:
@@ -624,7 +625,7 @@ class AgentNotebook:
                 return ToolResponse(content=[TextBlock(type="text", text=f"✅ 场景已更新: {scene}")])
             else:
 
-                sql = '''INSERT INTO scenes (project, scene, world_prompt, elements, mood, color_tone, lighting_mood, characters, version)
+                sql = '''INSERT INTO scenes (project, uid, world_prompt, elements, mood, color_tone, lighting_mood, characters, version)
                          
                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'''
                 self._execute_with_retry(self.shared_conn, sql,
@@ -644,7 +645,7 @@ class AgentNotebook:
                     return ToolResponse(content=[TextBlock(type="text", text=f"⚠️ 已查询该场景（缓存结果）：\n{cached}")])
 
             cursor = self.shared_conn.cursor()
-            cursor.execute('SELECT * FROM scenes WHERE project=? AND scene=?', (project, scene))
+            cursor.execute('SELECT * FROM scenes WHERE project=? AND uid=?', (project, scene))
             row = cursor.fetchone()
             if row:
                 data = dict(row)
@@ -670,7 +671,7 @@ class AgentNotebook:
 
     def del_scene(self, project: str, scene: str) -> ToolResponse:
         try:
-            sql = "DELETE FROM scenes WHERE project=? AND scene=?"
+            sql = "DELETE FROM scenes WHERE project=? AND uid=?"
             cursor = self._execute_with_retry(self.shared_conn, sql, (project, scene))
             if cursor.rowcount > 0:
                 return ToolResponse(content=[TextBlock(type="text", text=f"🗑️ 场景 '{scene}' 已删除。")])
@@ -784,7 +785,7 @@ class AgentNotebook:
         import re
         prefix_str = f"{scene}-sh"
         if not shot or not re.match(rf"^{prefix_str}\d+$", shot):
-            shot = self._generate_next_id(self.shared_conn, 'shots', 'shot', prefix_str)
+            shot = self._generate_next_id(self.shared_conn, 'shots', 'uid', prefix_str)
 
         try:
             cursor = self.shared_conn.cursor()
@@ -822,7 +823,7 @@ class AgentNotebook:
 
             else:
                 sql = '''
-                      INSERT INTO shots (project, scene, shot, version, description, shot_size, camera_angle, camera_movement, lighting, prompt_path, image_path) \
+                      INSERT INTO shots (project, scene, uid, version, description, shot_size, camera_angle, camera_movement, lighting, prompt_path, image_path) \
                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                       '''
                 params = (
@@ -849,7 +850,7 @@ class AgentNotebook:
             prefix_str = f"{scene}-sh"
             
             # 使用现有最大值作为计数器起点，防止同一批里拿到相同的号
-            cursor.execute(f"SELECT shot FROM shots WHERE shot LIKE ? ORDER BY shot DESC LIMIT 1", (prefix_str + '%',))
+            cursor.execute(f"SELECT uid FROM shots WHERE uid LIKE ? ORDER BY uid DESC LIMIT 1", (prefix_str + '%',))
             max_row = cursor.fetchone()
             if max_row and max_row[0]:
                 match = re.search(r'(\d+)$', max_row[0])
@@ -878,7 +879,7 @@ class AgentNotebook:
                            FROM shots
                            WHERE project = ?
                              AND scene = ?
-                             AND shot = ?
+                             AND uid = ?
                              AND version = ?
                            ''', (project, scene, shot, version))
                 row = cursor.fetchone()
@@ -911,7 +912,7 @@ class AgentNotebook:
                         self._execute_with_retry(conn, sql, tuple(params))
                 else:
                     sql = '''
-                          INSERT INTO shots (project, scene, shot, version, description, shot_size, camera_angle, camera_movement, lighting, prompt_path, image_path) \
+                          INSERT INTO shots (project, scene, uid, version, description, shot_size, camera_angle, camera_movement, lighting, prompt_path, image_path) \
                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                           '''
                     params = (
@@ -929,10 +930,10 @@ class AgentNotebook:
         try:
             cursor = self.shared_conn.cursor()
             if version:
-                sql = "SELECT * FROM shots WHERE project=? AND scene=? AND shot=? AND version=?"
+                sql = "SELECT * FROM shots WHERE project=? AND scene=? AND uid=? AND version=?"
                 params = (project, scene, shot, version)
             else:
-                sql = "SELECT * FROM shots WHERE project=? AND scene=? AND shot=? ORDER BY version DESC LIMIT 1"
+                sql = "SELECT * FROM shots WHERE project=? AND scene=? AND uid=? ORDER BY version DESC LIMIT 1"
                 params = (project, scene, shot)
 
             rows = cursor.execute(sql, params).fetchall()
@@ -952,10 +953,10 @@ class AgentNotebook:
     def del_shot(self, project: str, scene: str, shot: str, version: int = None) -> ToolResponse:
         try:
             if version:
-                sql = "DELETE FROM shots WHERE project=? AND scene=? AND shot=? AND version=?"
+                sql = "DELETE FROM shots WHERE project=? AND uid=? AND shot=? AND version=?"
                 params = (project, scene, shot, version)
             else:
-                sql = "DELETE FROM shots WHERE project=? AND scene=? AND shot=?"
+                sql = "DELETE FROM shots WHERE project=? AND uid=? AND shot=?"
                 params = (project, scene, shot)
 
             cursor = self._execute_with_retry(self.shared_conn, sql, params)
@@ -1000,11 +1001,11 @@ class AgentNotebook:
         # 4. 如果没有传正确的强制编号（前缀+数字结尾），则由发号器自动分配
         import re
         if not name or not re.match(rf"^{prefix_str}\d+$", name):
-            name = self._generate_next_id(self.shared_conn, 'design_assets', 'name', prefix_str)
+            name = self._generate_next_id(self.shared_conn, 'design_assets', 'uid', prefix_str)
 
         try:
             cursor = self.shared_conn.cursor()
-            cursor.execute('SELECT id, version FROM design_assets WHERE project=? AND category=? AND name=?',
+            cursor.execute('SELECT id, version FROM design_assets WHERE project=? AND category=? AND uid=?',
                            (project, category, name))
             row = cursor.fetchone()
 
@@ -1026,7 +1027,7 @@ class AgentNotebook:
                 self._execute_with_retry(self.shared_conn, sql, tuple(params))
                 return ToolResponse(content=[TextBlock(type="text", text=f"✅ 资产已更新: {name} ({category}) v{new_version}")])
             else:
-                sql = '''INSERT INTO design_assets (project, category, name, describe, image_path, prompt_path, version)
+                sql = '''INSERT INTO design_assets (project, category, uid, describe, image_path, prompt_path, version)
                          VALUES (?, ?, ?, ?, ?, ?, ?)'''
                 params = (project, category, name, describe, image_path, prompt_file_path, 1)
                 self._execute_with_retry(self.shared_conn, sql, params)
@@ -1075,7 +1076,7 @@ class AgentNotebook:
             # Agents often confuse "Environment Design Asset" with "Scene Concept Image"
             if category.lower() in ["environment", "scene", "bg", "background"]:
                 # Try to find a scene with this name
-                cursor.execute('SELECT * FROM scenes WHERE project=? AND scene=?', (project, name))
+                cursor.execute('SELECT * FROM scenes WHERE project=? AND uid=?', (project, name))
                 scene_row = cursor.fetchone()
                 if scene_row:
                     scene_data = dict(scene_row)
@@ -1233,7 +1234,7 @@ class AgentNotebook:
 
                 # 3.1 Scene Info
                 shared_cursor.execute(
-                    "SELECT world_prompt, elements, characters, version, image_path, mood FROM scenes WHERE project=? AND scene=?",
+                    "SELECT world_prompt, elements, characters, version, image_path, mood FROM scenes WHERE project=? AND uid=?",
                     (target_project, scene))
                 row = shared_cursor.fetchone()
                 

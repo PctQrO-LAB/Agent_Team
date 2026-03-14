@@ -9,6 +9,7 @@ from agentscope.model import OpenAIChatModel
 from agentscope.memory import InMemoryMemory, Mem0LongTermMemory
 from agentscope.embedding import DashScopeTextEmbedding
 from agentscope.formatter import DeepSeekChatFormatter
+from agentscope.plan import PlanNotebook
 
 # --- 项目模块 ---
 from src.core.load_model import load_model_config
@@ -17,6 +18,7 @@ from src.tools.lark_schedule_tools import LarkScheduleTool
 from src.tools.note_tools import AgentNotebook
 from src.tools.clock_tool import ClockTool
 from src.core.lark_manager import LarkManager
+from src.core.skill_loader import register_agent_skills
 from agentscope.message import Msg
 
 
@@ -31,6 +33,7 @@ class ScheduleAgent(ReActAgent):
         config_args.pop("config_name", None)
         model_instance = OpenAIChatModel(**config_args)
         use_prompt = sys_prompt if sys_prompt else SCHEDULE_SYSTEM_PROMPT
+        plan_notebook = PlanNotebook()
 
         super().__init__(
             name=name,
@@ -42,11 +45,13 @@ class ScheduleAgent(ReActAgent):
             long_term_memory=memory,
             long_term_memory_mode="both",
             max_iters=15,
+            plan_notebook=plan_notebook,
         )
 
         # [新增] 1. 初始化上下文容器
         self.manager: Optional[LarkManager] = None
         self.current_chat_id: Optional[str] = None
+        self.plan_notebook = plan_notebook
 
         # [新增] 2. 注册实例级钩子 (Hook)
         # 根据文档，我们在 _acting (行动) 之前拦截，发送通知
@@ -247,6 +252,16 @@ class ScheduleAgent(ReActAgent):
         ]
         for t in tools_list:
             toolkit.register_tool_function(t)
+
+        register_agent_skills(toolkit, [
+            "skills/calendar_lark",
+            "skills/calendar_notebook",
+            "skills/memory_notebook",
+            "skills/plan_notebook",
+            "skills/agent_relay",
+            "skills/file_tools",
+            "skills/generate_tools"
+        ])
 
         dashscope_key = os.environ.get("DASHSCOPE_API_KEY")
         embedding_model = DashScopeTextEmbedding(model_name="text-embedding-v2",

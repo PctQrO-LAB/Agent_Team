@@ -2,7 +2,7 @@
 [
   {
     "config_name": "gemini_config",
-    "model_name": "gemini-3-pro-preview",
+    "model_name": "gemini-3.1-pro-preview",
     "api_key_env": "GEMINI_API_KEY",
     "generate_args": {
       "temperature": 1.0

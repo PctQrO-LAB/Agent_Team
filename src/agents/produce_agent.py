@@ -10,6 +10,7 @@ from agentscope.memory import InMemoryMemory, Mem0LongTermMemory
 from agentscope.embedding import GeminiTextEmbedding, DashScopeTextEmbedding
 from agentscope.formatter import GeminiChatFormatter
 from agentscope.message import Msg
+from agentscope.plan import PlanNotebook
 
 # Core & Tools
 from src.core.load_model import load_model_config
@@ -42,6 +43,7 @@ class ProduceAgent(ReActAgent):
         model_instance = GeminiChatModel(**config_args)
         sys_prompt = PRODUCER_SYSTEM_PROMPT
 
+        plan_notebook = PlanNotebook()
         super().__init__(
             name=name,
             sys_prompt=sys_prompt,
@@ -52,10 +54,14 @@ class ProduceAgent(ReActAgent):
             long_term_memory=None,
             long_term_memory_mode="agent_control",
             max_iters=15,
+            plan_notebook=plan_notebook,
         )
 
         self.manager: Optional[LarkManager] = None
         self.current_chat_id: Optional[str] = None
+        
+        self.plan_notebook = plan_notebook
+        self.plan_notebook.register_plan_change_hook(hook_name="notify_lark_plan", hook=self._hook_plan_change)
 
         # 注册 Hook：通知飞书
         self.register_instance_hook(
@@ -63,6 +69,16 @@ class ProduceAgent(ReActAgent):
             hook_name="notify_lark",
             hook=self._hook_notify_tool_execution
         )
+
+    def _hook_plan_change(self, notebook, plan):
+        """[Hook] 推送计划状态"""
+        if self.manager and self.current_chat_id:
+            try:
+                # 简单格式化进度
+                text = f"📋 **当前计划状态更新:**\n{plan.name} (Status: {plan.state})"
+                asyncio.create_task(self.manager.reply(self.current_chat_id, text))
+            except Exception as e:
+                print(f"⚠️ Plan Hook Error: {e}")
 
     def _hook_notify_tool_execution(self, agent_instance, msg, *args):
         """[Hook] 推送工具调用状态"""
@@ -139,10 +155,12 @@ class ProduceAgent(ReActAgent):
 
         toolkit = Toolkit()
         tools_list = [
+            # 建立工作区
+            fs_tool.init_workspace,
+
             # 读取上游设定
             note_tool.get_scene,
-            note_tool.get_character,
-            note_tool.get_design_asset,
+            note_tool.query_note,
             note_tool.get_shot,
 
             # 飞书云盘 (查剧本)
@@ -160,7 +178,7 @@ class ProduceAgent(ReActAgent):
         ]
         for t in tools_list: toolkit.register_tool_function(t)
 
-        register_agent_skills(toolkit, ["skills/film_notebook", "skills/memory_notebook", "skills/drive_lark"])
+        register_agent_skills(toolkit, ["skills/film_notebook", "skills/memory_notebook", "skills/plan_notebook", "skills/drive_lark", "skills/agent_relay", "skills/file_tools", "skills/generate_tools"])
 
         # 2. 记忆
         dashscope_key = os.environ.get("EMBEDDING_API_KEY")
@@ -171,17 +189,17 @@ class ProduceAgent(ReActAgent):
         llm_config.pop("config_name", None)
         mem0_llm = GeminiChatModel(**llm_config)
 
-        db_path = "/app/data/mem0_produce_db"
+        db_path = "data/mem0_shared_qdrant_db"
         if not os.path.exists(db_path): os.makedirs(db_path, exist_ok=True)
 
         vector_config = VectorStoreConfig(provider="qdrant", config={"path": db_path})
 
         memory = Mem0LongTermMemory(
             agent_name="ProduceAgent",
-            user_name="User",
+            user_name="User", on_disk=False,
             model=mem0_llm,
             embedding_model=embedding_model,
-            vector_store_config=vector_config
+             
         )
 
         note_tool.set_long_term_memory(memory)

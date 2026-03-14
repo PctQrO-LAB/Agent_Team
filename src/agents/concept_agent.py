@@ -10,6 +10,7 @@ from agentscope.memory import InMemoryMemory, Mem0LongTermMemory
 from agentscope.embedding import DashScopeTextEmbedding
 from agentscope.formatter import OpenAIChatFormatter
 from agentscope.message import Msg
+from agentscope.plan import PlanNotebook
 
 # Core & Tools
 from src.core.load_model import load_model_config
@@ -41,6 +42,7 @@ class ConceptAgent(ReActAgent):
         config_args.pop("config_name", None)
         model_instance = OpenAIChatModel(**config_args)
         sys_prompt = CONCEPT_SYSTEM_PROMPT
+        plan_notebook = PlanNotebook()
 
         super().__init__(
             name=name,
@@ -52,10 +54,12 @@ class ConceptAgent(ReActAgent):
             long_term_memory=None,
             long_term_memory_mode="agent_control",
             max_iters=8,
+            plan_notebook=plan_notebook,
         )
 
         self.manager: Optional[LarkManager] = None
         self.current_chat_id: Optional[str] = None
+        self.plan_notebook = plan_notebook
 
         # 注册 Hook：通知飞书
         self.register_instance_hook(
@@ -151,6 +155,7 @@ class ConceptAgent(ReActAgent):
         register_agent_skills(toolkit, [
             "skills/film_notebook",
             "skills/memory_notebook",
+            "skills/plan_notebook",
             "skills/file_tools",
             "skills/generate_tools"
         ])

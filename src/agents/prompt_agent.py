@@ -169,13 +169,15 @@ class PromptAgent(ReActAgent):
             note_tool.register_asset,
             note_tool.read_note,  # 允许它读笔记本
             note_tool.save_memento,  # 允许它写长期记忆
-            fs_tool.init_shot_structure,
+            fs_tool.init_workspace,
             # Prompt/图已由 n8n 处理，不再在本地落盘
         ]
         for t in tools_list:
             toolkit.register_tool_function(t)
 
         register_agent_skills_from_env(toolkit)
+        from src.core.skill_loader import register_agent_skills
+        register_agent_skills(toolkit, ["skills/file_tools", "skills/generate_tools"])
 
         # 2. 初始化长期记忆 (Mem0)
         # 这里的 user_name 可以写 "DirectorUser" 或者统一 "User"
@@ -187,7 +189,7 @@ class PromptAgent(ReActAgent):
         llm_config.pop("config_name", None)
         mem0_llm = DashScopeChatModel(**llm_config)
 
-        prompter_db_path = "/app/data/mem0_prompter_db"
+        prompter_db_path = "data/mem0_shared_qdrant_db"
         if not os.path.exists(prompter_db_path):
             os.makedirs(prompter_db_path, exist_ok=True)
 
@@ -200,10 +202,10 @@ class PromptAgent(ReActAgent):
 
         memory = Mem0LongTermMemory(
             agent_name="PromptAgent",
-            user_name="User",
+            user_name="User", on_disk=False,
             model=mem0_llm,
             embedding_model=embedding_model,
-            vector_store_config=vector_config_obj  # 👈 传入对象
+             _obj  # 👈 传入对象
         )
 
         note_tool.set_long_term_memory(memory)

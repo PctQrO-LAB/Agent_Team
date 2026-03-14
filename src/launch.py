@@ -17,6 +17,7 @@ from agents.storyboard_agent import StoryboardAgent
 from agents.produce_agent import ProduceAgent
 from agents.design_agent import DesignAgent
 from agents.assistant_agent import AssistantAgent
+from agents.qc_agent import QCAgent
 
 from core.webhook_server import build_webhook_app, start_webhook_server
 from core.agent_relay import AgentRelay
@@ -76,6 +77,11 @@ async def main():
     if produce_pack:
         services.append(produce_pack)
 
+    # 8. 尝试组装 QC Agent (新增)
+    qc_pack = QCAgent.build_from_env()
+    if qc_pack:
+        services.append(qc_pack)
+
     if not services:
         logger.error("❌ 无可用 Agent。")
         return
@@ -87,6 +93,9 @@ async def main():
         setattr(agent, "relay", relay)
         relay_tool = AgentRelayTool(relay, sender_name=agent.name)
         agent.toolkit.register_tool_function(relay_tool.send_agent_message)
+        # 为监制 agent 添加广播能力，也可以给所有 agent 添加
+        if agent.name == "ProduceAgent":
+            agent.toolkit.register_tool_function(relay_tool.broadcast_message)
 
     # 3. Webhook 服务启动
     webhook_enabled = os.environ.get("WEBHOOK_ENABLED", "1") == "1"
@@ -106,6 +115,7 @@ async def main():
             "StoryboardAgent": "STORYBOARD",
             "AssistantAgent": "ASSISTANT",
             "ProduceAgent": "PRODUCE",
+            "QCAgent": "QC",
         }
 
         endpoint_map = {}

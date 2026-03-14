@@ -32,12 +32,12 @@ class AgentRelay:
 
     async def send(self, sender: str, receiver: str, content: str, mirror: bool = True):
         if receiver not in self.agents:
-            raise ValueError(f"Unknown receiver agent: {receiver}")
+            raise ValueError(f"Unknown receiver agent: {receiver}. Available agents: {', '.join(self.agents.keys())}")
 
         if mirror:
             await self._mirror_message(sender, receiver, content)
 
-        msg = Msg(name=sender, content=content, role="user")
+        msg = Msg(name=sender, content=content, role="assistant")
         response = await self.agents[receiver](msg)
 
         if mirror:
