@@ -59,7 +59,8 @@ async def main():
 
             default_endpoint = prefix.lower()
             endpoint = os.environ.get(f"{prefix}_WEBHOOK_PATH") or default_endpoint
-            
+            endpoint = endpoint.strip("/")
+
             verification_token = os.environ.get(f"{prefix}_VERIFICATION_TOKEN") or global_verification_token
             encrypt_key = os.environ.get(f"{prefix}_ENCRYPT_KEY")
             
