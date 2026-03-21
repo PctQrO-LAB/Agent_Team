@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   assistant_team:
     build: .
@@ -5,33 +7,12 @@ services:
     working_dir: /app
     ports:
       - "8000:8000"
-    environment:
-      - TZ=Asia/Shanghai
-      - PYTHONPATH=/app
-      - SCHEDULER_APP_ID=${SCHEDULER_APP_ID:-}
-      - SCHEDULER_APP_SECRET=${SCHEDULER_APP_SECRET:-}
-      - USER_OPEN_ID=${USER_      - USER_OPEN_ID=${USER_      - USDE      - USER_OPEN_ID=${USER_      - USER_OPEN_IAS      - USER_OPEN_ID=${USER_      - RT=      - USER_OPEN_ID=${USER_      - USER_Oap      - USER_OPEN_ID=${USER_   r/D      - USER_OPEN_ID=${USER_      - USER_OPEN_ID=${USER_    .p      - USER_OPEN_st      - USER_OPEN_ID=${USER_      - USER_OPEN_ID=${USER_      - USDE      - USER_OPEN_ID=${USER_      - USER_OPEN_IAS      - USER_OPEN_ID=${USER_      - RT=      - USERrc      - USER_OPEN_ID=${USER_      - USER_OPEN_ID=${USER_c/      - USER_OPEN_ID=${USER_      - USER_OPEN_ID=${USER_      - USki      - USER_OPEN_ID=${USER_      - Ueb      - USER_OPEN_ID=${USER_      - USEook skills/memory_notebook
-rm -f src/launch.py src/launch_assistant.py
-mv src/launch_crew.py src/launch.py
-
-cat << 'EOF' > docker-compose.yml
-services:
-  crew_team:
-    build: .
-    container_name: crew_team
-    working_dir: /app
-    ports:
-      - "8001:8001"
-    environment:
-      - TZ=Asia/Shanghai
-      - PYTHONPATH=/app
-      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
-      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:-}
-      - WEBHOOK_PORT=8001
     volumes:
-      - crew_data:/app/data
-      - /Users/roomserver/Documents/AIGC:/app/production
+      - ./data:/app/data
+      - ./skills:/app/skills
+      - ./.env:/app/.env
+    environment:
+      - TZ=Asia/Shanghai
+      - PYTHONPATH=/app
+    restart: always
     command: python src/launch.py
-
-volumes:
-  crew_data:

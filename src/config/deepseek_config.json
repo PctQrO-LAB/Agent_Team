@@ -1,11 +1,12 @@
-
 [
   {
     "config_name": "deepseek_config",
     "model_name": "deepseek-chat",
     "api_key_env": "DEEPSEEK_API_KEY",
     "client_kwargs": {
-      "base_url": "https://api.deepseek.com"
+      "base_url": "https://api.deepseek.com",
+      "timeout": 120.0,
+      "max_retries": 5
     },
     "generate_args": {
       "temperature": 0.1

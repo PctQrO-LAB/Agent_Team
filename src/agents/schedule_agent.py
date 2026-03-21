@@ -69,7 +69,6 @@ class ScheduleAgent(ReActAgent):
         [前端同步版] 嗅探工具调用，并直接推送到飞书
         """
         import asyncio  # 引入异步库
-
         # --- 内部小助手：安全取值 ---
         def safe_get(data, key):
             if isinstance(data, dict):
@@ -80,18 +79,29 @@ class ScheduleAgent(ReActAgent):
         found = False
 
         # -----------------------------------------------------------
-        # 1. 嗅探逻辑 (之前的代码，保持不变)
-        # -----------------------------------------------------------
-        # 针对 keys=['tool_call'] 的结构提取
-        inner_call = safe_get(msg, 'tool_call')
-        if inner_call:
-            name = safe_get(inner_call, 'name')
-            if not name:
-                func = safe_get(inner_call, 'function')
-                if func: name = safe_get(func, 'name')
-            if name:
-                tool_name = name
+        # 1. 嗅探逻辑
+        # 直接解析作为参数传递的 tool call dict
+        if isinstance(msg, dict):
+            if "function" in msg:
+                name = safe_get(msg["function"], "name")
+                if name:
+                    tool_name = name
+                    found = True
+            elif "name" in msg:
+                tool_name = msg["name"]
                 found = True
+
+        if not found:
+            # 针对 keys=['tool_call'] 的结构提取
+            inner_call = safe_get(msg, 'tool_call')
+            if inner_call:
+                name = safe_get(inner_call, 'name')
+                if not name:
+                    func = safe_get(inner_call, 'function')
+                    if func: name = safe_get(func, 'name')
+                if name:
+                    tool_name = name
+                    found = True
 
         # 兜底：兼容标准 tool_calls
         if not found:
@@ -198,6 +208,11 @@ class ScheduleAgent(ReActAgent):
             try:
                 # [新增] 设置当前聊天的上下文 ID
                 self.current_chat_id = chat_id
+
+                try:
+                    await manager.reply(chat_id, f"✅ 收到您的消息，{self.name}正在处理...")
+                except Exception as e:
+                    print(f"⚠️ Ack Error: {e}")
 
                 response = await self(msg)
                 await manager.reply(chat_id, response.content)
