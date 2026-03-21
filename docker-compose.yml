@@ -1,51 +1,37 @@
-
-
 services:
-  agent_team:
-    # === [公] 镜像构建 ===
-    # PyCharm 会读取这里，知道通过当前目录的 Dockerfile 来构建环境
-    build:
-      context: .
-      dockerfile: Dockerfile
-
-    container_name: agent_team
-
-    # === [私] 注入环境变量 ===
-    # 这里的技巧是：不要把 KEY 写在这里！
-    # 而是指定去读取 .env 文件。Git 里不传 .env，只传这个配置。
-    # 别人下载代码后，新建一个自己的 .env 填入 KEY 即可。
-
-    # === [私] 注入文件 (挂载) ===
-    # 左边是你的 Mac 路径，右边是容器内路径。
-    # 别人下载代码后，把自己的 json 文件放在项目根目录，Docker 就会自动挂载进去。
-
-    # === [公] 运行配置 ===
+  assistant_team:
+    build: .
+    container_name: assistant_team
     working_dir: /app
-
-    # 端口映射：将容器内的 8000 端口映射到宿主机的 8000 端口
     ports:
       - "8000:8000"
-
-    # 解决时区问题 (北京时间)
     environment:
       - TZ=Asia/Shanghai
       - PYTHONPATH=/app
-      # 飞书配置
       - SCHEDULER_APP_ID=${SCHEDULER_APP_ID:-}
       - SCHEDULER_APP_SECRET=${SCHEDULER_APP_SECRET:-}
-      - USER_OPEN_ID=${USER_OPEN_ID:-}
+      - USER_OPEN_ID=${USER_      - USER_OPEN_ID=${USER_      - USDE      - USER_OPEN_ID=${USER_      - USER_OPEN_IAS      - USER_OPEN_ID=${USER_      - RT=      - USER_OPEN_ID=${USER_      - USER_Oap      - USER_OPEN_ID=${USER_   r/D      - USER_OPEN_ID=${USER_      - USER_OPEN_ID=${USER_    .p      - USER_OPEN_st      - USER_OPEN_ID=${USER_      - USER_OPEN_ID=${USER_      - USDE      - USER_OPEN_ID=${USER_      - USER_OPEN_IAS      - USER_OPEN_ID=${USER_      - RT=      - USERrc      - USER_OPEN_ID=${USER_      - USER_OPEN_ID=${USER_c/      - USER_OPEN_ID=${USER_      - USER_OPEN_ID=${USER_      - USki      - USER_OPEN_ID=${USER_      - Ueb      - USER_OPEN_ID=${USER_      - USEook skills/memory_notebook
+rm -f src/launch.py src/launch_assistant.py
+mv src/launch_crew.py src/launch.py
 
-      # 模型配置
+cat << 'EOF' > docker-compose.yml
+services:
+  crew_team:
+    build: .
+    container_name: crew_team
+    working_dir: /app
+    ports:
+      - "8001:8001"
+    environment:
+      - TZ=Asia/Shanghai
+      - PYTHONPATH=/app
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
       - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:-}
-
+      - WEBHOOK_PORT=8001
     volumes:
-      - agent_data:/app/data
+      - crew_data:/app/data
       - /Users/roomserver/Documents/AIGC:/app/production
-
-    # 保持容器运行，方便 PyCharm 连接
-    # 这里的 command 可以是你的主程序，也可以是 tail -f /dev/null (空转等待调试)
     command: python src/launch.py
 
 volumes:
-  agent_data:
+  crew_data:

@@ -257,10 +257,7 @@ class ScheduleAgent(ReActAgent):
             "skills/calendar_lark",
             "skills/calendar_notebook",
             "skills/memory_notebook",
-            "skills/plan_notebook",
-            "skills/agent_relay",
-            "skills/file_tools",
-            "skills/generate_tools"
+            "skills/plan_notebook"
         ])
 
         dashscope_key = os.environ.get("DASHSCOPE_API_KEY")
