@@ -10,8 +10,6 @@ services:
     volumes:
       - ./data:/app/data
       - ./skills:/app/skills
-    env_file:
-      - .env
     environment:
       - TZ=Asia/Shanghai
       - PYTHONPATH=/app
