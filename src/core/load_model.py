@@ -51,14 +51,15 @@ def load_model_config(config_name: str, override_api_key: str = None) -> dict:
 
     # === 原有逻辑：组装返回 ===
     # 注意：这里我们修改了 api_key 的取值来源
-    return {
+    result = {
         "config_name": target_config.get("config_name", config_name),
         "model_name": target_config.get("model_name"),
         "api_key": final_api_key,  # <--- 使用计算出的最终 Key
         "client_kwargs": target_config.get("client_kwargs", {}),
-        "generate_args": target_config.get("generate_args", {}),
         "stream": target_config.get("stream", False)
     }
+    
+    return result
 
     # 3. 🔥 智能解析 (核心修改点)
     # 不再强制要求 config_name 必须匹配，只要有数据就行

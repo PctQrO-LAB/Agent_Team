@@ -91,6 +91,10 @@ def build_webhook_app(endpoint_map: Dict[str, WebhookEndpointConfig]) -> Flask:
                     payload = json.loads(raw_body) if raw_body.strip().startswith("{") else {}
                 except Exception:
                     payload = {}
+                    
+        # --- 拦截并打印 n8n 原始信息 ---
+        logger.info(f"🔍 [Intercept] Raw payload received at /{endpoint} : {json.dumps(payload, ensure_ascii=False)}")
+                    
         is_n8n = str(payload.get("source", "")).lower() == "n8n"
         if not is_n8n:
             if ("event" not in payload and "schema" not in payload and

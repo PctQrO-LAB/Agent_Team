@@ -9,6 +9,7 @@ from agentscope.model import OpenAIChatModel
 from agentscope.memory import InMemoryMemory, Mem0LongTermMemory
 from agentscope.embedding import DashScopeTextEmbedding
 from agentscope.formatter import DeepSeekChatFormatter
+from agentscope.plan import PlanNotebook
 
 # --- 项目模块 ---
 from src.core.load_model import load_model_config
@@ -17,6 +18,7 @@ from src.tools.lark_schedule_tools import LarkScheduleTool
 from src.tools.note_tools import AgentNotebook
 from src.tools.clock_tool import ClockTool
 from src.core.lark_manager import LarkManager
+from src.core.skill_loader import register_agent_skills
 from agentscope.message import Msg
 
 
@@ -31,6 +33,7 @@ class ScheduleAgent(ReActAgent):
         config_args.pop("config_name", None)
         model_instance = OpenAIChatModel(**config_args)
         use_prompt = sys_prompt if sys_prompt else SCHEDULE_SYSTEM_PROMPT
+        plan_notebook = PlanNotebook()
 
         super().__init__(
             name=name,
@@ -42,11 +45,13 @@ class ScheduleAgent(ReActAgent):
             long_term_memory=memory,
             long_term_memory_mode="both",
             max_iters=15,
+            plan_notebook=plan_notebook,
         )
 
         # [新增] 1. 初始化上下文容器
         self.manager: Optional[LarkManager] = None
         self.current_chat_id: Optional[str] = None
+        self.plan_notebook = plan_notebook
 
         # [新增] 2. 注册实例级钩子 (Hook)
         # 根据文档，我们在 _acting (行动) 之前拦截，发送通知
@@ -55,16 +60,38 @@ class ScheduleAgent(ReActAgent):
             hook_name="notify_lark_on_tool_call",
             hook=self._hook_notify_tool_execution
         )
+        
+        # [新增] 注册 post_reply 钩子：拦截模型回复，实现基于语意的自动清理记忆
+        self.register_instance_hook(
+            hook_type="post_reply",
+            hook_name="auto_clear_memory",
+            hook=self._hook_post_reply_auto_clear
+        )
 
     # [新增] 3. 定义钩子函数
     # 钩子签名必须符合: (self, kwargs) -> dict | None
+
+    def _hook_post_reply_auto_clear(self, agent_instance, kwargs, msg):
+        """
+        [钩子] 回复后置拦截器：检测大模型是否输出了结束标记，若有则自动清理记忆。
+        这样就不需要硬编码依赖用户的"退下"等关键字，而是由 Agent 结合上下文自主决策。
+        """
+        if hasattr(msg, "content") and isinstance(msg.content, str):
+            if "<SESSION_END>" in msg.content:
+                # 清除短期记忆
+                self.memory.clear()
+                # 抹掉给用户看的标记
+                msg.content = msg.content.replace("<SESSION_END>", "").strip()
+                # 给用户明确的反馈
+                msg.content += "\n\n*(✅ 当前任务已完成，短期记忆已自动归档并清理)*"
+                print(f"🧹 [{self.name}] 触发 Hook，短期记忆已自动清空！")
+        return msg
 
     def _hook_notify_tool_execution(self, agent_instance, msg, *args):
         """
         [前端同步版] 嗅探工具调用，并直接推送到飞书
         """
         import asyncio  # 引入异步库
-
         # --- 内部小助手：安全取值 ---
         def safe_get(data, key):
             if isinstance(data, dict):
@@ -75,18 +102,29 @@ class ScheduleAgent(ReActAgent):
         found = False
 
         # -----------------------------------------------------------
-        # 1. 嗅探逻辑 (之前的代码，保持不变)
-        # -----------------------------------------------------------
-        # 针对 keys=['tool_call'] 的结构提取
-        inner_call = safe_get(msg, 'tool_call')
-        if inner_call:
-            name = safe_get(inner_call, 'name')
-            if not name:
-                func = safe_get(inner_call, 'function')
-                if func: name = safe_get(func, 'name')
-            if name:
-                tool_name = name
+        # 1. 嗅探逻辑
+        # 直接解析作为参数传递的 tool call dict
+        if isinstance(msg, dict):
+            if "function" in msg:
+                name = safe_get(msg["function"], "name")
+                if name:
+                    tool_name = name
+                    found = True
+            elif "name" in msg:
+                tool_name = msg["name"]
                 found = True
+
+        if not found:
+            # 针对 keys=['tool_call'] 的结构提取
+            inner_call = safe_get(msg, 'tool_call')
+            if inner_call:
+                name = safe_get(inner_call, 'name')
+                if not name:
+                    func = safe_get(inner_call, 'function')
+                    if func: name = safe_get(func, 'name')
+                if name:
+                    tool_name = name
+                    found = True
 
         # 兜底：兼容标准 tool_calls
         if not found:
@@ -146,6 +184,17 @@ class ScheduleAgent(ReActAgent):
 
             async def trigger_report(report_type: str, prompt: str):
                 print(f"⏰ [{self.name}] 生物钟触发: {report_type}")
+                
+                # [新增] 限制短期记忆上下文长度，防止超出 Token 限制
+                try:
+                    max_msgs = 20
+                    if hasattr(self.memory, "content") and isinstance(self.memory.content, list):
+                        if len(self.memory.content) > max_msgs:
+                            self.memory.content = self.memory.content[-max_msgs:]
+                            print(f"🧹 [{self.name}] (生物钟) 记忆过长，已截断至最近 {max_msgs} 条")
+                except Exception as e:
+                    pass
+
                 time_content = ClockTool().get_current_datetime().content[0]
 
                 # 兼容处理：如果是对象则用 .text，如果是字典则用 .get("text")
@@ -189,10 +238,25 @@ class ScheduleAgent(ReActAgent):
         async def _chat_loop(text: str, sender_id: str, chat_id: str):
             print(f"⚡ [{self.name}] 收到消息 | User: {sender_id}")
 
+            # [新增] 限制短期记忆上下文长度，防止超出 Token 限制
+            try:
+                max_msgs = 20  # 保留最近 20 条消息 (包括工具调用和思考)
+                if hasattr(self.memory, "content") and isinstance(self.memory.content, list):
+                    if len(self.memory.content) > max_msgs:
+                        self.memory.content = self.memory.content[-max_msgs:]
+                        print(f"🧹 [{self.name}] 短期记忆过长，已截断至最近 {max_msgs} 条")
+            except Exception as e:
+                print(f"⚠️ 记忆截断失败: {e}")
+
             msg = Msg(name="user", content=text, role="user")
             try:
                 # [新增] 设置当前聊天的上下文 ID
                 self.current_chat_id = chat_id
+
+                try:
+                    await manager.reply(chat_id, f"✅ 收到您的消息，{self.name}正在处理...")
+                except Exception as e:
+                    print(f"⚠️ Ack Error: {e}")
 
                 response = await self(msg)
                 await manager.reply(chat_id, response.content)
@@ -232,7 +296,8 @@ class ScheduleAgent(ReActAgent):
         # 1. 动态生成 Prompt (注入数据库地图)
         # ----------------------------------------------------
         db_schema = notebook.get_schema_prompt()
-        full_sys_prompt = SCHEDULE_SYSTEM_PROMPT + "\n" + db_schema
+        hook_instruction = "\n[重要系统指令] 当你认为一个多轮对话任务（如排程、答疑）已经彻底完成，并且已经通过笔记本（如 add_pattern, save_memento）将核心结论归档后，你必须在最终回复中包含特殊标记 `<SESSION_END>`，系统拦截到该标记后会自动清空工作台记忆。\n"
+        full_sys_prompt = SCHEDULE_SYSTEM_PROMPT + "\n" + db_schema + hook_instruction
 
         toolkit = Toolkit()
         tools_list = [
@@ -247,6 +312,13 @@ class ScheduleAgent(ReActAgent):
         ]
         for t in tools_list:
             toolkit.register_tool_function(t)
+
+        register_agent_skills(toolkit, [
+            "skills/calendar_lark",
+            "skills/calendar_notebook",
+            "skills/memory_notebook",
+            "skills/plan_notebook"
+        ])
 
         dashscope_key = os.environ.get("DASHSCOPE_API_KEY")
         embedding_model = DashScopeTextEmbedding(model_name="text-embedding-v2",

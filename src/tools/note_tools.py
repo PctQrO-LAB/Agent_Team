@@ -16,7 +16,7 @@ class AgentNotebook:
     # 公共/私有表集合，便于路由到对应数据库
     SHARED_TABLES = {
         "tasks", "calendars", "projects", "patterns", "resources",
-        "production_assets", "scenes", "design_assets"
+        "shots", "scenes", "design_assets", "beat_list"
     }
     PRIVATE_TABLES = {"mementos", "patterns_private"}
 
@@ -123,21 +123,20 @@ class AgentNotebook:
                        ''')
 
         cursor.execute('''
-                       CREATE TABLE IF NOT EXISTS production_assets
+                       CREATE TABLE IF NOT EXISTS shots
                        (
                            id              INTEGER PRIMARY KEY AUTOINCREMENT,
                            project         TEXT,
                            scene           TEXT,
                            shot            TEXT,
-                           version         INTEGER,
-                           prompt_path     TEXT,
-                           image_path      TEXT,
-                           status          TEXT,
-                           audit_feedback  TEXT,
                            shot_size       TEXT,
                            camera_angle    TEXT,
                            camera_movement TEXT,
                            lighting        TEXT,
+                           description     TEXT,
+                           prompt_path     TEXT,
+                           image_path      TEXT,
+                           version         INTEGER DEFAULT 1,
                            updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                            UNIQUE (project, scene, shot, version)
                        );
@@ -155,6 +154,7 @@ class AgentNotebook:
                            color_tone    TEXT,
                            lighting_mood TEXT,
                            characters    TEXT,
+                           
                            version       INTEGER,
                            created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                            updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -169,20 +169,115 @@ class AgentNotebook:
                            project       TEXT NOT NULL,
                            name          TEXT NOT NULL,
                            category      TEXT NOT NULL,
+                           describe      TEXT NOT NULL,
+                           image_path    TEXT NOT NULL,
                            prompt_path   TEXT,
-                           image_path    TEXT,
-                           attributes    TEXT,
-                           oss_url_cache TEXT,
-                           status        TEXT,
-                           remarks       TEXT,
+                           version       INTEGER DEFAULT 1,
                            created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                           updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                            UNIQUE (project, name, category)
+                       );
+                       ''')
+
+        cursor.execute('''
+                       CREATE TABLE IF NOT EXISTS beat_list
+                       (
+                           id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                           project       TEXT NOT NULL,
+                           scene         TEXT NOT NULL,
+                           beat_num      TEXT NOT NULL,
+                           description   TEXT,
+                           created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                           updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                           UNIQUE (project, scene, beat_num)
                        );
                        ''')
 
         self.shared_conn.commit()
 
         self._migrate_scenes_table()
+        self._migrate_design_assets_table()
+        # self._migrate_scenes_image_path()  # Removed for Direction A
+        # self._migrate_scenes_file_path()  # Removed for Direction A
+        self._migrate_shots_status()
+    
+    def _migrate_shots_status(self):
+        """Remove status column from shots table."""
+        cursor = self.shared_conn.cursor()
+        try:
+            cursor.execute("SELECT status FROM shots LIMIT 1")
+            print("🔧 Removing 'status' column from shots table...")
+            try:
+                cursor.execute("ALTER TABLE shots DROP COLUMN status")
+                self.shared_conn.commit()
+                print("✅ shots table updated (dropped status).")
+            except Exception as e:
+                print(f"⚠️ Migration warning (shots.status): {e}")
+        except sqlite3.OperationalError:
+            pass # Column already gone
+
+    def _migrate_design_assets_table(self):
+        """Migrate design_assets table: status -> version, remove attrs/remarks, add describe."""
+        cursor = self.shared_conn.cursor()
+        try:
+            # Check if 'describe' column exists acts as flag for new schema
+            cursor.execute("SELECT describe FROM design_assets LIMIT 1")
+        except sqlite3.OperationalError:
+            print("🔧 Migrating design_assets table structure (v2)...")
+            try:
+                # 1. Add describe column
+                try:
+                    cursor.execute("ALTER TABLE design_assets ADD COLUMN describe TEXT")
+                except sqlite3.OperationalError: pass
+
+                # 2. Add version/updated_at if missing (safety check)
+                try:
+                    cursor.execute("ALTER TABLE design_assets ADD COLUMN version INTEGER DEFAULT 1")
+                except sqlite3.OperationalError: pass
+                
+                try:
+                    cursor.execute("ALTER TABLE design_assets ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+                except sqlite3.OperationalError: pass
+                
+                # 3. Drop obsolete columns
+                # Note: SQLite dropped columns support added in 3.35.0
+                for col in ['status', 'attributes', 'oss_url_cache', 'remarks']:
+                    try:
+                        cursor.execute(f"ALTER TABLE design_assets DROP COLUMN {col}")
+                    except sqlite3.OperationalError: pass
+
+                self.shared_conn.commit()
+                print("✅ design_assets table migrated to new schema.")
+            except Exception as e:
+                print(f"⚠️ Migration warning: {e}")
+
+    def _migrate_scenes_image_path(self):
+        """Add image_path to scenes table if missing."""
+        cursor = self.shared_conn.cursor()
+        try:
+            cursor.execute("SELECT image_path FROM scenes LIMIT 1")
+        except sqlite3.OperationalError:
+            print("🔧 Adding 'image_path' column to scenes table...")
+            try:
+                cursor.execute("ALTER TABLE scenes ADD COLUMN image_path TEXT")
+                self.shared_conn.commit()
+                print("✅ scenes table updated (added image_path).")
+            except Exception as e:
+                print(f"⚠️ Migration warning (scenes.image_path): {e}")
+
+    def _migrate_scenes_file_path(self):
+        """Add file_path to scenes table if missing."""
+        cursor = self.shared_conn.cursor()
+        try:
+            cursor.execute("SELECT file_path FROM scenes LIMIT 1")
+        except sqlite3.OperationalError:
+            print("🔧 Adding 'file_path' column to scenes table...")
+            try:
+                cursor.execute("ALTER TABLE scenes ADD COLUMN file_path TEXT")
+                self.shared_conn.commit()
+                print("✅ scenes table updated (added file_path).")
+            except Exception as e:
+                print(f"⚠️ Migration warning (scenes.file_path): {e}")
 
     def _migrate_scenes_table(self):
         """迁移 scenes 表：删除 concept 字段，将 status 改为 version。"""
@@ -209,6 +304,7 @@ class AgentNotebook:
                            color_tone    TEXT,
                            lighting_mood TEXT,
                            characters    TEXT,
+                           file_path     TEXT,
                            version       INTEGER,
                            created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                            updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -300,6 +396,31 @@ class AgentNotebook:
             return self.private_conn, self.private_conn.cursor()
         return None, None
 
+    def _generate_next_id(self, conn, table_name: str, id_column: str, prefix: str) -> str:
+        """
+        根据指定表和前缀，生成下一个补零的顺序ID
+        例如 prefix 为 'p01-sc03-en'，如果库里最大为 'p01-sc03-en02'，则返回 'p01-sc03-en03'
+        """
+        cursor = conn.cursor()
+        # 原生 SQL 匹配前缀最大值
+        cursor.execute(f"SELECT {id_column} FROM {table_name} WHERE {id_column} LIKE ? ORDER BY {id_column} DESC LIMIT 1", (prefix + '%',))
+        row = cursor.fetchone()
+        
+        if row and row[id_column]:
+            max_id = row[id_column]
+            # 提取最后两位(或多位)数字
+            import re
+            match = re.search(r'(\d+)$', max_id)
+            if match:
+                last_num = int(match.group(1))
+                new_num = last_num + 1
+            else:
+                new_num = 1
+        else:
+            new_num = 1
+            
+        return f"{prefix}{new_num:02d}"
+
     def get_schema_prompt(self, scope: str = "all") -> str:
         def _collect(conn, title):
             cursor = conn.cursor()
@@ -357,8 +478,13 @@ class AgentNotebook:
         return self.save_schedule(table_name, data)
 
     def query_note(self, table_name: str, filter_conditions: dict = None) -> ToolResponse:
-        """查询指定表。"""
-        return self.execute_sql_query(table_name, filter_conditions)
+        """
+        查询指定表。
+        :param table_name: 只能是以下表名之一: "tasks", "calendars", "projects", "patterns", "resources", "shots", "scenes", "design_assets", "beat_list", "mementos", "patterns_private"
+        :param filter_conditions: 过滤条件字典
+        """
+        # 直接复用 read_note，但不限制只取极少条数，使用较大 limit 查询
+        return self.read_note(table_name, limit=50, filter_conditions=filter_conditions)
 
     def delete_from_note(self, table_name: str, conditions: dict) -> ToolResponse:
         """从表中删除记录。"""
@@ -373,8 +499,8 @@ class AgentNotebook:
         cursor = self.shared_conn.cursor()
         cursor.execute('''
             SELECT MAX(version) AS max_ver
-            FROM production_assets
-            WHERE project=? AND scene=? AND shot=?
+            FROM shots
+            WHERE project=? AND uid=? AND shot=?
         ''', (project, scene, shot))
         row = cursor.fetchone()
         if not row or row[0] is None:
@@ -462,7 +588,7 @@ class AgentNotebook:
                                      (self.agent_name, name, progress))
         return ToolResponse(content=[TextBlock(type="text", text=f"✅ 项目 '{name}' 进度已更新")])
 
-    def save_scene(self, project: str, scene: str,
+    def save_scene(self, project: str, scene: str = None,
                    world_prompt: str = None,
                    elements: str = None,
                    mood: str = None,
@@ -470,9 +596,16 @@ class AgentNotebook:
                    lighting_mood: str = None,
                    characters: str = None,
                    version: int = None) -> ToolResponse:
+        
+        # 1. 自动派发符合规范的编号 p01-sc01
+        import re
+        prefix_str = f"{project}-sc"
+        if not scene or not re.match(rf"^{prefix_str}\d+$", scene):
+            scene = self._generate_next_id(self.shared_conn, 'scenes', 'uid', prefix_str)
+
         try:
             cursor = self.shared_conn.cursor()
-            cursor.execute('SELECT id FROM scenes WHERE project=? AND scene=?', (project, scene))
+            cursor.execute('SELECT id FROM scenes WHERE project=? AND uid=?', (project, scene))
             row = cursor.fetchone()
 
             if row:
@@ -495,7 +628,9 @@ class AgentNotebook:
                 self._execute_with_retry(self.shared_conn, sql, tuple(params))
                 return ToolResponse(content=[TextBlock(type="text", text=f"✅ 场景已更新: {scene}")])
             else:
-                sql = '''INSERT INTO scenes (project, scene, world_prompt, elements, mood, color_tone, lighting_mood, characters, version)
+
+                sql = '''INSERT INTO scenes (project, uid, world_prompt, elements, mood, color_tone, lighting_mood, characters, version)
+                         
                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'''
                 self._execute_with_retry(self.shared_conn, sql,
                                          (project, scene, world_prompt, elements, mood, color_tone, lighting_mood,
@@ -514,7 +649,7 @@ class AgentNotebook:
                     return ToolResponse(content=[TextBlock(type="text", text=f"⚠️ 已查询该场景（缓存结果）：\n{cached}")])
 
             cursor = self.shared_conn.cursor()
-            cursor.execute('SELECT * FROM scenes WHERE project=? AND scene=?', (project, scene))
+            cursor.execute('SELECT * FROM scenes WHERE project=? AND uid=?', (project, scene))
             row = cursor.fetchone()
             if row:
                 data = dict(row)
@@ -526,6 +661,7 @@ class AgentNotebook:
                     f"🌈 Color Tone: {data.get('color_tone') or 'Not defined'}\n"
                     f"💡 Lighting Mood: {data.get('lighting_mood') or 'Not defined'}\n"
                     f"🧑 Characters: {data.get('characters') or 'Not defined'}\n"
+                    
                     f"🧾 Version: {('v' + str(data.get('version'))) if data.get('version') else 'unknown'}"
                 )
                 self._last_scene_query.update({"key": cache_key, "ts": now_ts, "response": info})
@@ -539,7 +675,7 @@ class AgentNotebook:
 
     def del_scene(self, project: str, scene: str) -> ToolResponse:
         try:
-            sql = "DELETE FROM scenes WHERE project=? AND scene=?"
+            sql = "DELETE FROM scenes WHERE project=? AND uid=?"
             cursor = self._execute_with_retry(self.shared_conn, sql, (project, scene))
             if cursor.rowcount > 0:
                 return ToolResponse(content=[TextBlock(type="text", text=f"🗑️ 场景 '{scene}' 已删除。")])
@@ -548,23 +684,121 @@ class AgentNotebook:
         except Exception as e:
             return ToolResponse(content=[TextBlock(type="text", text=f"❌ 删除场景失败: {e}")])
 
-    def save_shot(self, project: str, scene: str, shot: str, version: int = 1,
-                  prompt_file_path: str = None,
-                  image_path: str = None,
-                  status: str = None,
-                  remarks: str = None,
+    def save_beat(self, project: str, scene: str, beat_num: str,
+                  description: str = None) -> ToolResponse:
+        """
+        保存或更新节拍清单 (Beat List)
+        """
+        try:
+            conn = self.shared_conn
+            cursor = conn.cursor()
+            cursor.execute('SELECT id FROM beat_list WHERE project=? AND scene=? AND beat_num=?',
+                           (project, scene, beat_num))
+            row = cursor.fetchone()
+
+            if row:
+                if description:
+                    sql = f"UPDATE beat_list SET description=?, updated_at=CURRENT_TIMESTAMP WHERE id=?"
+                    self._execute_with_retry(conn, sql, (description, row[0]))
+                    return ToolResponse(content=[TextBlock(type="text", text=f"✅ 节拍已更新: [{scene}-{beat_num}]")])
+                else:
+                    return ToolResponse(content=[TextBlock(type="text", text="⚠️ 无变更 (未提供 description)。")])
+            else:
+                sql = '''INSERT INTO beat_list (project, scene, beat_num, description)
+                         VALUES (?, ?, ?, ?)'''
+                params = (project, scene, beat_num, description)
+                self._execute_with_retry(conn, sql, params)
+                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 节拍已创建: [{scene}-{beat_num}]")])
+        except Exception as e:
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ Save Beat Error: {e}")])
+
+    def save_beat_list(self, project: str, scene: str, beats: List[Dict[str, str]]) -> ToolResponse:
+        """
+        批量保存节拍清单 (Batch Save Beat List)
+        :param beats: List of dicts, e.g., [{"beat_num": "1", "description": "..."}, {"beat_num": "2", "description": "..."}]
+        """
+        try:
+            conn = self.shared_conn
+            cursor = conn.cursor()
+            success_count = 0
+            
+            # 使用事务进行批量操作
+            for beat in beats:
+                beat_num = beat.get("beat_num")
+                description = beat.get("description")
+                
+                if not beat_num or not description:
+                    continue
+
+                cursor.execute('SELECT id FROM beat_list WHERE project=? AND scene=? AND beat_num=?',
+                               (project, scene, beat_num))
+                row = cursor.fetchone()
+
+                if row:
+                    sql = f"UPDATE beat_list SET description=?, updated_at=CURRENT_TIMESTAMP WHERE id=?"
+                    self._execute_with_retry(conn, sql, (description, row[0]))
+                else:
+                    sql = '''INSERT INTO beat_list (project, scene, beat_num, description)
+                             VALUES (?, ?, ?, ?)'''
+                    self._execute_with_retry(conn, sql, (project, scene, beat_num, description))
+                success_count += 1
+                
+            return ToolResponse(content=[TextBlock(type="text", text=f"✅ 批量保存成功: 已处理 {success_count} 个节拍。")])
+        except Exception as e:
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ Batch Save Error: {e}")])
+
+    def get_beat_list(self, project: str, scene: str = None) -> ToolResponse:
+        """
+        获取节拍清单
+        """
+        try:
+            conn = self.shared_conn
+            cursor = conn.cursor()
+            
+            if scene:
+                sql = "SELECT * FROM beat_list WHERE project=? AND scene=? ORDER BY beat_num ASC"
+                params = (project, scene)
+            else:
+                sql = "SELECT * FROM beat_list WHERE project=? ORDER BY scene ASC, beat_num ASC"
+                params = (project,)
+                
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+            
+            if not rows:
+                return ToolResponse(content=[TextBlock(type="text", text=f"📭 未找到节拍清单: {project} {scene or ''}")])
+                
+            result_list = [dict(row) for row in rows]
+            return ToolResponse(content=[TextBlock(type="text", text=json.dumps(result_list, indent=2, ensure_ascii=False))])
+        except Exception as e:
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ Get Beat Error: {e}")])
+
+    def save_shot(self, project: str, scene: str, shot: str = None,
+                  description: str = None,
                   shot_size: str = None,
                   camera_angle: str = None,
                   camera_movement: str = None,
-                  lighting: str = None) -> ToolResponse:
+                  lighting: str = None,
+                  prompt_file_path: str = None,
+                  image_path: str = None,
+                  # Compatibility args (ignored)
+                  status: str = None,
+                  version: int = 1) -> ToolResponse:
+        
+        # 1. 自动派发符合规范的编号 p01-sc01-sh01
+        import re
+        prefix_str = f"{scene}-sh"
+        if not shot or not re.match(rf"^{prefix_str}\d+$", shot):
+            shot = self._generate_next_id(self.shared_conn, 'shots', 'uid', prefix_str)
+
         try:
             cursor = self.shared_conn.cursor()
             cursor.execute('''
                            SELECT id
-                           FROM production_assets
+                           FROM shots
                            WHERE project = ?
                              AND scene = ?
-                             AND shot = ?
+                             AND uid = ?
                              AND version = ?
                            ''', (project, scene, shot, version))
             row = cursor.fetchone()
@@ -574,51 +808,136 @@ class AgentNotebook:
                 fields = []
                 params = []
 
-                if prompt_file_path: fields.append("prompt_path=?"); params.append(prompt_file_path)
-                if image_path: fields.append("image_path=?"); params.append(image_path)
-                if status: fields.append("status=?"); params.append(status)
-                if remarks: fields.append("audit_feedback=?"); params.append(remarks)
-
+                if description: fields.append("description=?"); params.append(description)
                 if shot_size: fields.append("shot_size=?"); params.append(shot_size)
                 if camera_angle: fields.append("camera_angle=?"); params.append(camera_angle)
                 if camera_movement: fields.append("camera_movement=?"); params.append(camera_movement)
                 if lighting: fields.append("lighting=?"); params.append(lighting)
+                if prompt_file_path: fields.append("prompt_path=?"); params.append(prompt_file_path)
+                # status field is removed
 
                 if not fields:
                     return ToolResponse(content=[TextBlock(type="text", text="⚠️ 无字段变更。")])
 
                 fields.append("updated_at=CURRENT_TIMESTAMP")
-                sql = f"UPDATE production_assets SET {', '.join(fields)} WHERE id=?"
+                sql = f"UPDATE shots SET {', '.join(fields)} WHERE id=?"
                 params.append(shot_id)
                 self._execute_with_retry(self.shared_conn, sql, tuple(params))
-                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 分镜表已更新: {shot} v{version}")])
+                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 镜头已更新: {shot} v{version}")])
 
             else:
                 sql = '''
-                      INSERT INTO production_assets (project, scene, shot, version, prompt_path, image_path, status, \
-                                                     audit_feedback, \
-                                                     shot_size, camera_angle, camera_movement, lighting) \
-                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      INSERT INTO shots (project, scene, uid, version, description, shot_size, camera_angle, camera_movement, lighting, prompt_path, image_path) \
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                       '''
-                final_status = status or 'planning'
                 params = (
-                    project, scene, shot, version, prompt_file_path, image_path, final_status, remarks,
-                    shot_size, camera_angle, camera_movement, lighting
+                    project, scene, shot, version, description, shot_size, camera_angle, camera_movement, lighting, prompt_file_path, image_path
                 )
                 self._execute_with_retry(self.shared_conn, sql, params)
-                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 分镜条目已规划: {shot} v{version}")])
+                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 镜头已创建: {shot} v{version}")])
 
         except Exception as e:
             return ToolResponse(content=[TextBlock(type="text", text=f"❌ Error: {e}")])
+
+    def save_shot_batch(self, project: str, scene: str, shots: List[Dict[str, str]]) -> ToolResponse:
+        """
+        批量保存镜头 (Batch Save Shots)
+        :param shots: List of dicts, keys: shot, description, shot_size, camera_angle, camera_movement, lighting, prompt_path, image_path, version
+        """
+        try:
+            conn = self.shared_conn
+            cursor = conn.cursor()
+            success_count = 0
+
+            # 为批量镜头预先拿到当前场景的起始ID，方便连续派号
+            import re
+            prefix_str = f"{scene}-sh"
+            
+            # 使用现有最大值作为计数器起点，防止同一批里拿到相同的号
+            cursor.execute(f"SELECT uid FROM shots WHERE uid LIKE ? ORDER BY uid DESC LIMIT 1", (prefix_str + '%',))
+            max_row = cursor.fetchone()
+            if max_row and max_row[0]:
+                match = re.search(r'(\d+)$', max_row[0])
+                current_max_num = int(match.group(1)) if match else 0
+            else:
+                current_max_num = 0
+
+            for item in shots:
+                shot = item.get("shot")
+                
+                # 如果没传，或者是乱写的名字，就派发连号
+                if not shot or not re.match(rf"^{prefix_str}\d+$", shot):
+                    current_max_num += 1
+                    shot = f"{prefix_str}{current_max_num:02d}"
+                    item["shot"] = shot # 更新回字典以便后续使用
+                else:
+                    # 如果传了正确的名字（如手动指定的某号），提取它的数字更新当前最大计数器，以免后续自增冲突
+                    match = re.search(r'(\d+)$', shot)
+                    if match and int(match.group(1)) > current_max_num:
+                        current_max_num = int(match.group(1))
+
+                version = item.get("version", 1)
+                
+                cursor.execute('''
+                           SELECT id
+                           FROM shots
+                           WHERE project = ?
+                             AND scene = ?
+                             AND uid = ?
+                             AND version = ?
+                           ''', (project, scene, shot, version))
+                row = cursor.fetchone()
+
+                description = item.get("description")
+                shot_size = item.get("shot_size")
+                camera_angle = item.get("camera_angle")
+                camera_movement = item.get("camera_movement")
+                lighting = item.get("lighting")
+                prompt_file_path = item.get("prompt_path")
+                image_path = item.get("image_path")
+                # status field is removed
+
+                if row:
+                    shot_id = row[0]
+                    fields = []
+                    params = []
+
+                    if description: fields.append("description=?"); params.append(description)
+                    if shot_size: fields.append("shot_size=?"); params.append(shot_size)
+                    if camera_angle: fields.append("camera_angle=?"); params.append(camera_angle)
+                    if camera_movement: fields.append("camera_movement=?"); params.append(camera_movement)
+                    if lighting: fields.append("lighting=?"); params.append(lighting)
+                    if prompt_file_path: fields.append("prompt_path=?"); params.append(prompt_file_path)
+
+                    if fields:
+                        fields.append("updated_at=CURRENT_TIMESTAMP")
+                        sql = f"UPDATE shots SET {', '.join(fields)} WHERE id=?"
+                        params.append(shot_id)
+                        self._execute_with_retry(conn, sql, tuple(params))
+                else:
+                    sql = '''
+                          INSERT INTO shots (project, scene, uid, version, description, shot_size, camera_angle, camera_movement, lighting, prompt_path, image_path) \
+                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          '''
+                    params = (
+                        project, scene, shot, version, description, shot_size, camera_angle, camera_movement, lighting, prompt_file_path, image_path
+                    )
+                    self._execute_with_retry(conn, sql, params)
+                success_count += 1
+
+            return ToolResponse(content=[TextBlock(type="text", text=f"✅ 批量镜头保存成功: 已处理 {success_count} 个镜头。")])
+
+        except Exception as e:
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ Batch Save Shots Error: {e}")])
 
     def get_shot(self, project: str, scene: str, shot: str, version: int = None) -> ToolResponse:
         try:
             cursor = self.shared_conn.cursor()
             if version:
-                sql = "SELECT * FROM production_assets WHERE project=? AND scene=? AND shot=? AND version=?"
+                sql = "SELECT * FROM shots WHERE project=? AND scene=? AND uid=? AND version=?"
                 params = (project, scene, shot, version)
             else:
-                sql = "SELECT * FROM production_assets WHERE project=? AND scene=? AND shot=? ORDER BY version DESC LIMIT 1"
+                sql = "SELECT * FROM shots WHERE project=? AND scene=? AND uid=? ORDER BY version DESC LIMIT 1"
                 params = (project, scene, shot)
 
             rows = cursor.execute(sql, params).fetchall()
@@ -626,12 +945,6 @@ class AgentNotebook:
             result_data = []
             for row in rows:
                 item = dict(row)
-                item['cinematography'] = {
-                    "size": item.get('shot_size') or "N/A",
-                    "angle": item.get('camera_angle') or "N/A",
-                    "movement": item.get('camera_movement') or "N/A",
-                    "lighting": item.get('lighting') or "N/A"
-                }
                 result_data.append(item)
 
             if result_data:
@@ -644,10 +957,10 @@ class AgentNotebook:
     def del_shot(self, project: str, scene: str, shot: str, version: int = None) -> ToolResponse:
         try:
             if version:
-                sql = "DELETE FROM production_assets WHERE project=? AND scene=? AND shot=? AND version=?"
+                sql = "DELETE FROM shots WHERE project=? AND uid=? AND shot=? AND version=?"
                 params = (project, scene, shot, version)
             else:
-                sql = "DELETE FROM production_assets WHERE project=? AND scene=? AND shot=?"
+                sql = "DELETE FROM shots WHERE project=? AND uid=? AND shot=?"
                 params = (project, scene, shot)
 
             cursor = self._execute_with_retry(self.shared_conn, sql, params)
@@ -655,47 +968,83 @@ class AgentNotebook:
         except Exception as e:
             return ToolResponse(content=[TextBlock(type="text", text=f"❌ 删除镜头失败: {e}")])
 
-    def save_design_asset(self, project: str, category: str, name: str,
+    def save_design_asset(self, project: str, category: str,
+                          describe: str,
+                          image_path: str,
+                          scene: str = None,
+                          shot: str = None,
+                          name: str = None,
                           prompt_file_path: str = None,
-                          image_path: str = None,
+                          # Compatibility args (ignored)
                           attributes: str = None,
-                          status: str = None,
-                          remarks: str = None) -> ToolResponse:
+                          remarks: str = None,
+                          status: str = None 
+                          ) -> ToolResponse:
+        
+        if not describe or not image_path:
+             return ToolResponse(content=[TextBlock(type="text", text=f"❌ Error: 'describe' and 'image_path' are mandatory fields for design assets.")])
+
+        # 1. 强制映射分类到合法前缀白名单
+        PREFIX_MAP = {
+            "environment": "en", "en": "en",
+            "character": "ch", "ch": "ch",
+            "prop": "pr", "pr": "pr"
+        }
+        type_prefix = PREFIX_MAP.get(category.lower())
+        if not type_prefix:
+            return ToolResponse(content=[TextBlock(type="text", text=f"❌ Error: 非法的 category '{category}'。仅允许 environment/en, character/ch, prop/pr")])
+
+        # 2. 严选组装前缀 (例如: p01, 或 p01-sc03)
+        parts = [project]
+        if scene: parts.append(scene)
+        if shot: parts.append(shot)
+        
+        # 3. 拼接资产类型前缀 (例如: p01-sc03-en 或 全局的 p01-ch)
+        prefix_str = f"{'-'.join(parts)}-{type_prefix}"
+        
+        # 4. 如果没有传正确的强制编号（前缀+数字结尾），则由发号器自动分配
+        import re
+        if not name or not re.match(rf"^{prefix_str}\d+$", name):
+            name = self._generate_next_id(self.shared_conn, 'design_assets', 'uid', prefix_str)
+
         try:
             cursor = self.shared_conn.cursor()
-            cursor.execute('SELECT id FROM design_assets WHERE project=? AND category=? AND name=?',
+            cursor.execute('SELECT id, version FROM design_assets WHERE project=? AND category=? AND uid=?',
                            (project, category, name))
             row = cursor.fetchone()
 
             if row:
-                fields = []
-                params = []
+                current_version = row['version'] if row['version'] else 1
+                new_version = current_version + 1
+                
+                fields = ["version=?, updated_at=CURRENT_TIMESTAMP"]
+                params = [new_version]
+                
+                # Update core fields
+                fields.append("describe=?"); params.append(describe)
+                fields.append("image_path=?"); params.append(image_path)
+                
                 if prompt_file_path: fields.append("prompt_path=?"); params.append(prompt_file_path)
-                if image_path: fields.append("image_path=?"); params.append(image_path)
-                if attributes: fields.append("attributes=?"); params.append(attributes)
-                if status: fields.append("status=?"); params.append(status)
-                if remarks: fields.append("remarks=?"); params.append(remarks)
-
-                if not fields:
-                    return ToolResponse(content=[TextBlock(type="text", text="⚠️ 无变更。")])
 
                 sql = f"UPDATE design_assets SET {', '.join(fields)} WHERE id=?"
-                params.append(row[0])
+                params.append(row['id'])
                 self._execute_with_retry(self.shared_conn, sql, tuple(params))
-                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 资产已更新: {name} ({category})")])
+                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 资产已更新: {name} ({category}) v{new_version}")])
             else:
-                sql = '''INSERT INTO design_assets (project, category, name, prompt_path, image_path, attributes, status, remarks)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)'''
-                final_status = status or 'planning'
-                params = (project, category, name, prompt_file_path, image_path, attributes, final_status, remarks)
+                sql = '''INSERT INTO design_assets (project, category, uid, describe, image_path, prompt_path, version)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)'''
+                params = (project, category, name, describe, image_path, prompt_file_path, 1)
                 self._execute_with_retry(self.shared_conn, sql, params)
-                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 新资产已登记: {name} ({category})")])
+                return ToolResponse(content=[TextBlock(type="text", text=f"✅ 新资产已登记: {name} ({category}) v1")])
         except Exception as e:
             return ToolResponse(content=[TextBlock(type="text", text=f"❌ Error: {e}")])
 
-    def save_character(self, project: str, name: str,
-                       prompt_file_path: str = None,
+    def save_character(self, project: str, name: str = None,
+                       describe: str = None,
                        image_path: str = None,
+                       scene: str = None,
+                       prompt_file_path: str = None,
+                       # Compatibility args
                        attributes: str = None,
                        status: str = None,
                        remarks: str = None) -> ToolResponse:
@@ -703,23 +1052,52 @@ class AgentNotebook:
             project=project,
             category="character",
             name=name,
-            prompt_file_path=prompt_file_path,
+            describe=describe,
             image_path=image_path,
-            attributes=attributes,
-            status=status,
-            remarks=remarks,
+            scene=scene,
+            prompt_file_path=prompt_file_path,
         )
 
     def get_design_asset(self, project: str, category: str, name: str) -> ToolResponse:
         try:
+            PREFIX_MAP = {
+                "environment": "en", "en": "en",
+                "character": "ch", "ch": "ch",
+                "prop": "pr", "pr": "pr"
+            }
+            mapped_category = PREFIX_MAP.get(category.lower(), category.lower())
+            
+            # 1. First, try to query exact match in design_assets table
             cursor = self.shared_conn.cursor()
-            cursor.execute('SELECT * FROM design_assets WHERE project=? AND category=? AND name=?',
-                           (project, category, name))
+            cursor.execute('SELECT * FROM design_assets WHERE project=? AND (category=? OR category=?) AND name=?',
+                           (project, category, mapped_category, name))
             row = cursor.fetchone()
+            
             if row:
                 return ToolResponse(content=[TextBlock(type="text", text=json.dumps(dict(row), indent=2, ensure_ascii=False))])
-            else:
-                return ToolResponse(content=[TextBlock(type="text", text=f"📭 未找到 {category}: '{name}'")])
+            
+            # 2. Fallback: If querying environment, also check 'scenes' table
+            # Agents often confuse "Environment Design Asset" with "Scene Concept Image"
+            if category.lower() in ["environment", "scene", "bg", "background"]:
+                # Try to find a scene with this name
+                cursor.execute('SELECT * FROM scenes WHERE project=? AND uid=?', (project, name))
+                scene_row = cursor.fetchone()
+                if scene_row:
+                    scene_data = dict(scene_row)
+                    # Construct a fake design asset from scene data
+                    virtual_asset = {
+                        "id": f"scene_{scene_data['id']}",
+                        "project": project,
+                        "name": scene_data['scene'],
+                        "category": "environment",
+                        "describe": f"[From Scene Concept] Mood: {scene_data.get('mood')}. World: {scene_data.get('world_prompt')}",
+                        "image_path": scene_data.get('image_path', ''),
+                        "version": scene_data.get('version', 1),
+                        "source": "derived_from_scenes_table" 
+                    }
+                    return ToolResponse(content=[TextBlock(type="text", text=json.dumps(virtual_asset, indent=2, ensure_ascii=False))])
+
+            return ToolResponse(content=[TextBlock(type="text", text=f"📭 未找到 {category}: '{name}'")])
         except Exception as e:
             return ToolResponse(content=[TextBlock(type="text", text=f"❌ Error: {e}")])
 
@@ -825,120 +1203,134 @@ class AgentNotebook:
         except Exception as e:
             print(f"❌ [Memory] Failed to record pattern: {e}")
 
-    def get_dashboard(self, role: str = 'default', project: str = None, scene: str = None) -> ToolResponse:
-        """仪表盘：创意/行政双视角，读取公库，备忘取私库"""
+    def get_dashboard(self, project: str = None, scene: str = None) -> ToolResponse:
+        """
+        仪表盘：获取当前工作台的状态，包括任务、项目、场景和资产信息。
+        如果指定了 project/scene，会显示详细信息。
+        如果不指定，会显示全局概览（包含所有项目列表）。
+        """
         try:
-            shared = self.shared_conn.cursor()
-            private = self.private_conn.cursor()
+            shared_cursor = self.shared_conn.cursor()
+            private_cursor = self.private_conn.cursor()
+            
             lines = []
+            
+            # --- 1. Global Index (Always fetch available projects to guide the agent) ---
+            # 这一步是为了防止 Agent 搞错项目名称，总是把系统里的真实项目名列出来
+            shared_cursor.execute("SELECT DISTINCT project FROM scenes UNION SELECT DISTINCT project FROM design_assets")
+            all_projects = [r[0] for r in shared_cursor.fetchall() if r[0]]
+            
+            # --- 2. Smart Context Check ---
+            # 如果用户传了 project 但不在库里，可能是拼写错误或大小写问题
+            target_project = project
+            if project:
+                # 简单的大小写模糊匹配
+                matched = next((p for p in all_projects if p.lower() == project.lower()), None)
+                if matched and matched != project:
+                    lines.append(f"⚠️ [Typo Correction] 输入的项目 '{project}' 未找到，自动修正为: '{matched}'")
+                    target_project = matched
+                elif not matched and project not in all_projects:
+                    lines.append(f"⚠️ [Warning] 项目 '{project}' 在数据库中不存在。现有项目: {all_projects}")
+            
+            # --- 3. View Construction ---
+            if target_project and scene:
+                lines.append(f"🎬 === 项目工作台: {target_project} / {scene} ===")
 
-            if role in ['prompter', 'concept', 'storyboard']:
-                if project and scene:
-                    lines.append(f"🎬 === 沉浸式工作台: {project} / {scene} ===")
-
-                    shared.execute(
-                        "SELECT world_prompt, elements, characters, version FROM scenes WHERE project=? AND scene=?",
-                        (project, scene))
-                    row = shared.fetchone()
-                    if row:
-                        lines.append("\n[场景设定]")
-                        lines.append(f"- 版本: {('v' + str(row['version'])) if row['version'] else '(未设定)'}")
-                        lines.append(f"- 核心元素: {row['elements'] or '(未设定)'}")
-                        lines.append(f"- 在场角色: {row['characters'] or '(未设定)'}")
-                        lines.append(f"- 世界观Prompt: {row['world_prompt'][:100]}..." if row['world_prompt'] else "- 世界观Prompt: (空)")
-                    else:
-                        lines.append("\n[场景设定] ⚠️ 尚未初始化 (请调用 save_scene 创建)")
-
-                    lines.append("\n[镜头列表 Shot List]")
-                    shared.execute('''
-                                   SELECT shot, version, status
-                                   FROM production_assets
-                                   WHERE project = ?
-                                     AND scene = ?
-                                   ORDER BY shot ASC, version DESC
-                                   ''', (project, scene))
-                    shot_rows = shared.fetchall()
-                    if shot_rows:
-                        shots_seen = set()
-                        for r in shot_rows:
-                            if r['shot'] not in shots_seen:
-                                icon = "✅" if r['status'] == 'audited' else "🎨"
-                                lines.append(f"- {r['shot']} (v{r['version']}) {icon} {r['status']}")
-                                shots_seen.add(r['shot'])
-                    else:
-                        lines.append("(暂无镜头资产)")
-
-                elif project:
-                    lines.append(f"🚀 === 项目概览: {project} ===")
-                    shared.execute("SELECT scene, version, updated_at FROM scenes WHERE project=? ORDER BY scene ASC",
-                                   (project,))
-                    scene_rows = shared.fetchall()
-                    lines.append("\n[场次列表 Scene List]")
-                    if scene_rows:
-                        for r in scene_rows:
-                            ver = f"v{r['version']}" if r['version'] else "未设定"
-                            lines.append(f"- {r['scene']} ({ver}) - Last Update: {r['updated_at'][:16]}")
-                    else:
-                        lines.append("(该项目暂无场次，请调用 save_scene 初始化)")
-
+                # 3.1 Scene Info
+                shared_cursor.execute(
+                    "SELECT world_prompt, elements, characters, version, image_path, mood FROM scenes WHERE project=? AND uid=?",
+                    (target_project, scene))
+                row = shared_cursor.fetchone()
+                
+                # 如果找不到 Scene，尝试模糊匹配
+                if not row:
+                     shared_cursor.execute("SELECT scene FROM scenes WHERE project=?", (target_project,))
+                     exist_scenes = [r[0] for r in shared_cursor.fetchall()]
+                     lines.append(f"❌ 场景 '{scene}' 未找到。")
+                     lines.append(f"📋 该项目下的已知场景: {exist_scenes}")
                 else:
-                    lines.append("👋 === 创意总监概览 (Global View) ===")
+                    lines.append("\n[场景设定 Scene Setup]")
+                    lines.append(f"- Mood: {row['mood'] or '(Empty)'}")
+                    lines.append(f"- Version: v{row['version'] or '?'}")
+                    lines.append(f"- Concept Image: {row['image_path'] or '❌ (Missing)'}")
+                    
+                # 3.2 Design Assets (Environment/Characters)
+                lines.append("\n[相关资产 Assets]")
+                shared_cursor.execute(
+                    "SELECT name, category, version, image_path FROM design_assets WHERE project=?",
+                    (target_project,))
+                assets = shared_cursor.fetchall()
+                if assets:
+                    for a in assets:
+                         status_icon = "✅" if a['image_path'] else "⏳"
+                         lines.append(f"- [{a['category']}] {a['name']} (v{a['version']}) {status_icon}")
+                else:
+                    lines.append("(暂无设计资产)")
 
-                    lines.append("\n[待办任务 Tasks]")
-                    shared.execute(
-                        "SELECT id, content, priority FROM tasks WHERE agent_name=? AND status='todo' ORDER BY priority ASC LIMIT 5",
-                        (self.agent_name,))
-                    task_rows = shared.fetchall()
-                    for r in task_rows:
-                        prio = "🔥" if r['priority'] < 2 else ""
-                        lines.append(f"- {prio}[ID:{r['id']}] {r['content']}")
-                    if not task_rows:
-                        lines.append("(无待办)")
+                # 3.3 Shots
+                lines.append("\n[镜头列表 Shots]")
+                shared_cursor.execute('''
+                               SELECT shot, version, description
+                               FROM shots
+                               WHERE project = ? AND scene = ?
+                               ORDER BY cast(shot as integer) ASC, version DESC
+                               ''', (target_project, scene))
+                shot_rows = shared_cursor.fetchall()
+                if shot_rows:
+                    shots_seen = set()
+                    for r in shot_rows:
+                        if r['shot'] not in shots_seen:
+                            lines.append(f"- Shot {r['shot']} (v{r['version']}): {r['description'][:30]}...")
+                            shots_seen.add(r['shot'])
+                else:
+                    lines.append("(暂无镜头)")
 
-                    lines.append("\n[活跃项目 Projects]")
-                    shared.execute("SELECT DISTINCT project FROM scenes LIMIT 10")
-                    project_rows = shared.fetchall()
-                    if project_rows:
-                        lines.append("检测到以下项目包含场景数据，请使用 get_dashboard(role='prompter', project='...') 查看详情：")
-                        for r in project_rows:
-                            lines.append(f"- {r['project']}")
-                    else:
-                        lines.append("(暂无活跃项目)")
+            elif target_project:
+                lines.append(f"🚀 === 项目概览: {target_project} ===")
+                lines.append(f"📚 [场景列表] (Scenes)")
+                shared_cursor.execute("SELECT scene, version, updated_at FROM scenes WHERE project=? ORDER BY scene ASC",
+                               (target_project,))
+                scene_rows = shared_cursor.fetchall()
+                if scene_rows:
+                    for r in scene_rows:
+                        lines.append(f"- {r['scene']} (v{r['version']})")
+                else:
+                    lines.append("(暂无场景)")
+                
+                lines.append(f"\n🎨 [资产库] (Assets)")
+                shared_cursor.execute("SELECT name, category FROM design_assets WHERE project=?", (target_project,))
+                asset_rows = shared_cursor.fetchall()
+                for r in asset_rows:
+                    lines.append(f"- {r['category']}: {r['name']}")
 
             else:
-                lines.append("📅 === 行政总览 (Scheduler View) ===")
+                lines.append("👋 === 全局概览 (Global View) ===")
+                
+                lines.append("\n🌍 [现有项目 Projects]")
+                if all_projects:
+                    for p in all_projects:
+                        lines.append(f"- {p}")
+                else:
+                    lines.append("(暂无项目)")
 
-                lines.append("\n[Tasks]")
-                shared.execute(
-                    "SELECT id, content, lark_id, due_date FROM tasks WHERE agent_name=? AND status='todo' ORDER BY priority ASC",
+                lines.append("\n📋 [你的任务 Tasks]")
+                shared_cursor.execute(
+                    "SELECT id, content, priority FROM tasks WHERE agent_name=? AND status='todo' ORDER BY priority ASC LIMIT 5",
                     (self.agent_name,))
-                task_rows = shared.fetchall()
+                task_rows = shared_cursor.fetchall()
                 for r in task_rows:
-                    lark_mark = f"[Lark:{r['lark_id'][-4:]}]" if r['lark_id'] else ""
-                    lines.append(f"- [ ] ID:{r['id']} {lark_mark} {r['content']} (Due: {r['due_date']})")
+                     prio = "🔥" if r['priority'] < 2 else ""
+                     lines.append(f"- {prio}[ID:{r['id']}] {r['content']}")
+                if not task_rows: lines.append("(无待办任务)")
 
-                lines.append("\n[Calendars]")
-                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                shared.execute(
-                    "SELECT content, start_time FROM calendars WHERE agent_name=? AND end_time > ? ORDER BY start_time ASC LIMIT 5",
-                    (self.agent_name, now_str))
-                cal_rows = shared.fetchall()
-                for r in cal_rows:
-                    lines.append(f"- 🕒 {r['start_time']} | {r['content']}")
-
-                lines.append("\n[Projects]")
-                shared.execute("SELECT name, progress FROM projects WHERE agent_name=?", (self.agent_name,))
-                project_rows = shared.fetchall()
-                for r in project_rows:
-                    lines.append(f"- 【{r['name']}】: {r['progress']}")
-
-            lines.append("\n🧠 [Mementos]")
-            private.execute("SELECT content FROM mementos WHERE agent_name=? ORDER BY id DESC LIMIT 2",
-                            (self.agent_name,))
-            memo_rows = private.fetchall()
-            if memo_rows:
-                for r in memo_rows:
-                    lines.append(f"- {r['content']}")
+            # Add Mementos at the end
+            lines.append("\n🧠 [近期备忘 Mementos]")
+            private_cursor.execute(
+                "SELECT content, created_at FROM mementos WHERE agent_name=? ORDER BY id DESC LIMIT 3",
+                (self.agent_name,))
+            mementos = private_cursor.fetchall()
+            for m in mementos:
+                lines.append(f"- {m['content'][:100]}...")
 
             return ToolResponse(content=[TextBlock(type="text", text="\n".join(lines))])
 
